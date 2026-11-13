@@ -1,0 +1,15 @@
+;; Prova: _start para AArch64 (freestanding, sem libc)
+;; Ponto de entrada: escreve "Hello from Prova AArch64!" via syscall write(64, buf, n)
+;; então encerra via syscall exit(93)
+
+(data msg "Hello from Prova AArch64!\n")
+
+(fn _start
+  (params)
+  (returns unit)
+  (pre)
+  (post)
+  (body
+    (let_slice b (data-ref msg))
+    (do (sys_write 64 b 25))
+    (sys_exit 93)))

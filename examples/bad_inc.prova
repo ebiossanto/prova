@@ -1,0 +1,7 @@
+;; DEVE FALHAR: x + 1 estoura em i64 quando x = 9223372036854775807.
+(fn inc
+  (params (x i64))
+  (returns i64)
+  (pre)
+  (post (= result (+ x 1)))
+  (body (return (+ x 1))))

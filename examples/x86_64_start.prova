@@ -1,0 +1,15 @@
+;; Prova: _start para x86-64 (freestanding, sem libc)
+;; Ponto de entrada: escreve "Hello from Prova!" via syscall write(1, buf, n)
+;; então encerra via syscall exit(0)
+
+(data msg "Hello from Prova!\n")
+
+(fn _start
+  (params)
+  (returns unit)
+  (pre)
+  (post)
+  (body
+    (let_slice b (data-ref msg))
+    (do (sys_write 1 b 18))
+    (sys_exit 0)))

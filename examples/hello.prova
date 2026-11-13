@@ -1,0 +1,13 @@
+;; Freestanding: sem libc. _start escreve na saída padrão e encerra via syscall.
+;; O mesmo fonte vira x86-64, AArch64 e RISC-V; o compilador escolhe registradores e números.
+(data msg "Hello, Prova!\n")
+
+(fn _start
+  (params)
+  (returns unit)
+  (pre)
+  (post)
+  (body
+    (let_slice b (data-ref msg))
+    (do (sys_write 1 b 14))
+    (sys_exit 0)))

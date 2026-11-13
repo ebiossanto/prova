@@ -1,0 +1,11 @@
+;; Test atomic type with acq-rel order
+;; Note: The GBNF syntax for atomic is (atomic T) without explicit order in the current setup
+(fn atomic_add
+  (params (x (atomic u32)) (y (atomic u32)) (result (atomic u32)))
+  (returns i64)
+  (pre)
+  (post (= result 0))
+  (body
+    (do (call llvm_atomic_add x y result))
+    (drop result)
+    (return 1)))

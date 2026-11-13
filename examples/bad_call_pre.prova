@@ -1,0 +1,17 @@
+;; DEVE FALHAR: clamp exige lo <= hi, mas aqui lo=10 e hi=0.
+(fn clamp
+  (params (x i64) (lo i64) (hi i64))
+  (returns i64)
+  (pre (<= lo hi))
+  (post (<= lo result) (<= result hi))
+  (body
+    (if (< x lo) (then (return lo)))
+    (if (> x hi) (then (return hi)))
+    (return x)))
+
+(fn caller
+  (params (x i64))
+  (returns i64)
+  (pre)
+  (post)
+  (body (return (call clamp x 10 0))))
