@@ -1,6 +1,0 @@
-* text=auto
-*.prova text eol=lf
-*.S text eol=lf
-*.ld text eol=lf
-*.gbnf text eol=lf
-*.sh text eol=lf

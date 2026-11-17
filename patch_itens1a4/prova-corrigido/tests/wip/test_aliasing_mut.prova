@@ -1,3 +1,0 @@
-;; Padrão proibido: aliasing mutable slices - mesmo buf passado duas vezes
-;; O linear checker deve rejeitar (foo buf buf)
-(fn alias_test (params (buf (slice u8 10)) (buf2 (slice u8 10))) (returns usize) (pre) (post) (body 0))

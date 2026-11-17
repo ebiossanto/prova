@@ -1,3 +1,16 @@
-;; Padrão proibido: aliasing mutable slices - mesmo buf passado duas vezes
-;; O linear checker deve rejeitar (foo buf buf)
-(fn alias_test (params (buf (slice u8 10)) (buf2 (slice u8 10))) (returns usize) (pre) (post) (body 0))
+;; DEVE FALHAR: Aliasing mutável — passar a mesma fatia 'buf' em dois parâmetros quando ao menos um é escrito.
+(fn copy_into
+  (params (n usize) (dst (slice u8 n)) (src (slice u8 n)))
+  (returns unit)
+  (pre (< 0 n))
+  (post (= (load dst 0) (load src 0)))
+  (body
+    (store dst 0 (load src 0))))
+
+(fn bad_alias_caller
+  (params (n usize) (buf (slice u8 n)))
+  (returns unit)
+  (pre (< 0 n))
+  (post)
+  (body
+    (do (call copy_into n buf buf))))

@@ -1,8 +1,0 @@
-__pycache__/
-*.pyc
-.pytest_cache/
-build/
-*.zip
-*_out.txt
-lean/.lake/
-lean/lake-manifest.json

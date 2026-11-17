@@ -1,0 +1,103 @@
+;; Ring Buffer SPSC (Single-Producer Single-Consumer) Lock-Free + MMIO Doorbell
+;; Exercita: células atômicas (static ... (atomic usize)), ordens tipadas (relaxed/acquire/release),
+;;           aritmética modular (add_wrap/sub_wrap), máscara bit_and (prova (bit_and idx 63) < 64 sem if),
+;;           conteúdo de fatias em contratos/assert, registradores MMIO com região e política deny-flow.
+(region shared-ring)
+(region nic-hw)
+(deny-flow shared-ring @write)
+
+(static rb_head (atomic usize) 0)
+(static rb_tail (atomic usize) 0)
+(mmio nic_doorbell 268435456 usize nic-hw)
+(mmio nic_status 268435464 usize nic-hw)
+
+(data ring_backing "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" shared-ring)
+(data status_backing "0")
+(data msg_pass "PASS\n")
+(data msg_fail "FAIL\n")
+
+;; Insere um byte na fila circular de 64 posições (lado do Produtor).
+;; Retorna 1 em caso de sucesso, ou 0 se o buffer estiver cheio.
+(fn ring_push
+  (params (cap usize) (buf (slice u8 cap shared-ring)) (val u8))
+  (returns usize)
+  (effects atomic mmio)
+  (stack-budget 128)
+  (pre (= cap 64))
+  (post (<= result 1))
+  (body
+    (let curr_tail usize (atomic_load rb_tail relaxed))
+    (let curr_head usize (atomic_load rb_head acquire))
+    (let used usize (sub_wrap curr_tail curr_head))
+    (if (>= used 64)
+      (then (return 0)))
+    ;; Capacidade em potência de 2 (64 = 2^6): o provador demonstra 0 <= (bit_and curr_tail 63) < 64
+    (let slot usize (bit_and curr_tail 63))
+    (store buf slot val)
+    (assert (= (load buf slot) val))
+    (let next_tail usize (add_wrap curr_tail 1))
+    (atomic_store rb_tail next_tail release)
+    (mmio_write nic_doorbell 1)
+    (return 1)))
+
+;; Remove um byte da fila circular de 64 posições (lado do Consumidor).
+;; Escreve 1 em out_ok[0] se leu dado (ou 0 se vazia) e retorna o byte lido.
+(fn ring_pop
+  (params (cap usize) (buf (slice u8 cap shared-ring))
+          (olen usize) (out_ok (slice u8 olen)))
+  (returns u8)
+  (effects atomic)
+  (stack-budget 128)
+  (pre (= cap 64) (= olen 1))
+  (post (<= (load out_ok 0) 1))
+  (body
+    (let curr_head usize (atomic_load rb_head relaxed))
+    (let curr_tail usize (atomic_load rb_tail acquire))
+    (if (= curr_head curr_tail)
+      (then
+        (store out_ok 0 0)
+        (return 0)))
+    (let slot usize (bit_and curr_head 63))
+    (let item u8 (load buf slot))
+    (let next_head usize (add_wrap curr_head 1))
+    (atomic_store rb_head next_head release)
+    (store out_ok 0 1)
+    (return item)))
+
+;; Ciclo de teste: lê status MMIO, exercita o protocolo SPSC e imprime PASS/FAIL.
+(fn test_ring_cycle
+  (params (cap usize) (buf (slice u8 cap shared-ring))
+          (olen usize) (status (slice u8 olen)))
+  (returns u8)
+  (effects atomic mmio)
+  (stack-budget 256)
+  (pre (= cap 64) (= olen 1))
+  (post (<= (load status 0) 1))
+  (body
+    (let hw usize (mmio_read nic_status))
+    (let pushed usize (call ring_push cap buf 42))
+    (if (= pushed 1)
+      (then
+        (let v u8 (call ring_pop cap buf olen status))
+        (return v)))
+    (store status 0 0)
+    (return (cast u8 (bit_and hw 0)))))
+
+(fn _start
+  (params)
+  (returns unit)
+  (effects syscall atomic mmio)
+  (stack-budget 512)
+  (pre)
+  (post)
+  (body
+    (let_slice ok_msg (data-ref msg_pass))
+    (let_slice bad_msg (data-ref msg_fail))
+    (let p usize (atomic_load rb_tail acquire))
+    (if (= p 0)
+      (then
+        (mmio_write nic_doorbell 1)
+        (do (sys_write 1 ok_msg (len ok_msg)))
+        (sys_exit 0)))
+    (do (sys_write 1 bad_msg (len bad_msg)))
+    (sys_exit 1)))

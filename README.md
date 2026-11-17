@@ -19,20 +19,22 @@ O humano audita só os contratos (`prova.py audit`); a IA corrige o corpo e **n�
 |---|---|---|
 | Contratos `pre`/`post`, erros matemáticos detalhados (`--json`), `pre` contraditória é erro | ✅ | `test_checker.py`, `test_fix_loop.py` |
 | Tipos estritos, tamanhos no tipo (`(slice u8 n)`), overflow e limites provados | ✅ | `test_checker.py` |
-| Posse linear (`own`, `drop`, movimento em chamadas), chamadas com contratos, sem recursão | ✅ | `test_checker.py` |
-| **Efeitos nas assinaturas** (`syscall`, `atomic`), propagação por chamadas | ✅ | `test_effects.py` |
-| **Regiões e fluxo de dados** (`flow`, `--dot`, `deny-flow` transitivo) | ✅ só fluxo explícito de valores | `test_flow.py` |
+| Posse linear (`own`, `drop`, movimento em chamadas), proibição de aliasing mutável, chamadas com contratos, sem recursão | ✅ | `test_checker.py`, `test_next_steps.py` |
+| **Conteúdo de fatias em contratos** (`load`, `old`, `forall` limitado) provado por teoria de arrays (McCarthy + Ackermann) | ✅ | `test_next_steps.py`, `copy_bytes.prova` |
+| **Operadores bitwise, shift e wrap** (`bit_and`, `bit_or`, `bit_xor`, `shl`, `shr` com VC de limites, `add_wrap`, `sub_wrap`) | ✅ | `test_next_steps.py`, `ring_buffer.prova` |
+| **Efeitos nas assinaturas** (`syscall`, `atomic`, `mmio`), propagação por chamadas | ✅ | `test_effects.py`, `test_next_steps.py` |
+| **Regiões, MMIO e fluxo de dados** (`flow`, `--dot`, `deny-flow` transitivo para regiões, `@write`, `@static:NOME`, `@mmio:NOME`) | ✅ só fluxo explícito de valores | `test_flow.py`, `test_next_steps.py` |
 | **Orçamento de pilha** pelo grafo de chamadas | ⚠️ quadros de um *modelo de custo*; valores reais via `--frames` | `test_stack.py` |
-| **Memória concorrente**: `static` atômico, ordens de memória tipadas, emissão `llvm` | ⚠️ checagem de tipos testada; MLIR atômico não validado | `test_atomics.py` |
-| **Laço fechado com a IA** com contratos travados (`prova.py fix`) | ✅ mecânica, com modelo de teste determinístico; plugue seu modelo via `--model-cmd` | `test_fix_loop.py` |
-| Provador linear interno (Fourier–Motzkin + McCormick), sem Z3 | ✅ sólido por fuzzing; incompleto | `test_linarith_fuzz.py` |
+| **Memória concorrente e Ring Buffer SPSC**: `static` atômico, ordens tipadas, `ring_buffer.prova`, emissão `llvm` | ✅/⚠️ checagem e execução testadas; MLIR não validado | `test_atomics.py`, `test_next_steps.py` |
+| **Laço fechado com a IA** com contratos travados (`prova.py fix`) | ✅ mecânica, com modelo de teste determinístico; plugue seu modelo via `--model-cmd` | `test_fix_loop.py`, `test_next_steps.py` |
+| Provador interno (Fourier–Motzkin + McCormick + McCarthy/Ackermann arrays + Skolemização), sem Z3 | ✅ sólido por fuzzing | `test_linarith_fuzz.py`, `test_next_steps.py` |
 | Gramática GBNF para constrained decoding | ✅ testada com mini-interpretador | `test_grammar.py` |
-| **Execução** (`prova.py run`): interpretador de referência que confere pre/post/invariantes/variante/limites/overflow em tempo de execução; teste diferencial contra o verificador | ✅ (não é código nativo) | `test_run.py`, `test_packet_inspector.py` |
+| **Execução** (`prova.py run`): interpretador de referência que confere pre/post/invariantes/variante/limites/overflow/arrays em tempo de execução; teste diferencial contra o verificador | ✅ (não é código nativo) | `test_run.py`, `test_packet_inspector.py`, `test_next_steps.py` |
 | Emissão MLIR para 3 alvos, syscalls por arquitetura | ⚠️ texto gerado e estrutura testada; **nunca passou por `mlir-opt`/`llc`** | `test_emit.py` |
 | Boot bare-metal x86-64 (pilha, `.bss`, linker script) | ✅ montado, ligado e **executado** | `test_boot.py` |
 | Boot AArch64 e RISC-V | ⚠️ só estrutura (sem toolchain/QEMU) | `test_boot.py` |
 | Z3 opcional | ⚠️ caminho existe, **não testado** | n/d |
-| Registradores como recursos lineares, MMIO/ponteiros, alocador, conteúdo de fatias (arrays), certificados Lean, threads/lock-free | ❌ não implementado | `docs/STATUS.md` |
+| Registradores como recursos lineares, alocador dinâmico, certificados Lean integrados, verificação de protocolos multi-thread | ❌ não implementado | `docs/STATUS.md` |
 
 Mapa completo da ideia original: [`docs/STATUS.md`](docs/STATUS.md).
 

@@ -20,7 +20,7 @@ def _exprs(s):
         return [s[2]]
     if h == "store":
         return list(s[1:])
-    if h in ("return", "assert", "do", "sys_exit", "atomic_store"):
+    if h in ("return", "assert", "do", "sys_exit", "atomic_store", "mmio_write"):
         return list(s[1:])
     if h in ("if", "while"):
         return [s[1]]

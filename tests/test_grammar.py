@@ -47,6 +47,10 @@ def test_grammar_accepts_the_new_constructs():
         "(stack-budget 256) (pre) (post) (body (atomic_store box 1 release) (do (atomic_fetch_add box 1 acq_rel)) "
         "(return)))\n",
         "(fn f (params) (returns usize) (pre) (post) (body (return (atomic_cas box 0 1 acq_rel acquire))))\n",
+        "(region hw)\n(mmio reg0 268435456 usize hw)\n(deny-flow hw @mmio:reg0)\n"
+        "(fn f (params (n usize) (b (slice u8 n))) (returns usize) (effects mmio) (pre (< 0 n)) "
+        "(post (forall k 0 n (= (load b k) (old (load b k))))) "
+        "(body (mmio_write reg0 (shl (bit_and (add_wrap (mmio_read reg0) 1) 63) 2)) (return 0)))\n",
     ]
     for src in ok:
         assert accepts(RULES, src), src

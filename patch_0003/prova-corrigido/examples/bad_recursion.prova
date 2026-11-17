@@ -1,7 +1,0 @@
-;; DEVE FALHAR: recursão não é suportada (verificação modular exigiria variante).
-(fn f
-  (params (x usize))
-  (returns usize)
-  (pre)
-  (post)
-  (body (return (call f x))))

@@ -1,10 +1,10 @@
 """Fluxo de dados por região (abordagem 3 da ideia original): mostra por onde um dado entra e onde toca a memória,
-e aplica políticas (deny-flow A B). Só fluxo EXPLÍCITO de valores (load → variável → store/syscall/atômico);
+e aplica políticas (deny-flow A B). Só fluxo EXPLÍCITO de valores (load/mmio → variável → store/syscall/atômico/mmio);
 fluxo implícito por controle (if/while) e vazamento por comprimento NÃO são rastreados.
 
-Rótulos: região concreta ("net-rx"), sumidouro "@write", célula "@static:NOME", ou ("p", i) = região/valor do
-parâmetro i (para funções genéricas). Resumos por função são instanciados em cada chamada."""
-from .check import ARITH, ATOMIC_OPS, CMP, atomic_vals, is_slice, slice_parts
+Rótulos: região concreta ("net-rx"), sumidouro "@write", célula "@static:NOME", registrador "@mmio:NOME",
+ou ("p", i) = região/valor do parâmetro i (para funções genéricas). Resumos por função são instanciados em cada chamada."""
+from .check import ATOMIC_OPS, BIN_INT_OPS, CMP, MMIO_OPS, atomic_vals, is_slice, slice_parts
 
 SINK = "@write"
 
@@ -64,6 +64,19 @@ def analyse_fn(fn, sigs, summaries, meta):
             link(tx(v), cell)
         return set() if e[0] == "atomic_store" else {cell}
 
+    def mmio(e):
+        reg = e[1]
+        info = meta.get("mmios", {}).get(reg, {})
+        r = info.get("region")
+        ep = "@mmio:" + reg
+        if e[0] == "mmio_write":
+            srcs = tx(e[2])
+            if r:
+                link(srcs, r)
+            link(srcs, ep)
+            return set()
+        return ({r, ep} if r else {ep})
+
     def call(e):
         g = sigs[e[1]]
         sigma = {}
@@ -86,7 +99,7 @@ def analyse_fn(fn, sigs, summaries, meta):
         if isinstance(e, str):
             return set(taint.get(e, set()))
         op = e[0]
-        if op in ARITH or op in CMP or op in ("and", "or", "not"):
+        if op in BIN_INT_OPS or op in CMP or op in ("and", "or", "not"):
             return set().union(*[tx(x) for x in e[1:]])
         if op == "cast":
             return tx(e[2])
@@ -99,6 +112,8 @@ def analyse_fn(fn, sigs, summaries, meta):
             return call(e)
         if op in ATOMIC_OPS:
             return atomic(e)
+        if op in MMIO_OPS:
+            return mmio(e)
         return set()  # len e afins: sem dado
 
     def stmts(ss):
@@ -112,7 +127,7 @@ def analyse_fn(fn, sigs, summaries, meta):
                 link(tx(s[3]), label[s[1]])
             elif h in ("do", "sys_exit"):
                 tx(s[1])
-            elif h == "atomic_store":
+            elif h in ("atomic_store", "mmio_write"):
                 tx(s)
             elif h == "return" and len(s) > 1:
                 ret.update(tx(s[1]))

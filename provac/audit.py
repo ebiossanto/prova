@@ -39,6 +39,8 @@ def audit(fns, meta=None):
             out.append("regiões   " + ", ".join(sorted(meta["regions"] - {"rodata"})))
         for n, T in meta["statics"].items():
             out.append(f"static    {n}: (atomic {T}) = {meta['static_init'][n]}   [única memória compartilhada]")
+        for n, info in meta.get("mmios", {}).items():
+            out.append(f"mmio      {n}: {info['type']} @ {hex(info['addr'])} ({info['region']})   [registrador de hardware]")
         for a, b in meta["denies"]:
             out.append(f"política  deny-flow {a} {b}")
         if out:

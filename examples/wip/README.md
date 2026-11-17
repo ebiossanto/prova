@@ -1,8 +1,6 @@
-# examples/wip: experimentos que AINDA NÃO funcionam
+# examples/wip: rascunhos históricos
 
-Estes arquivos usam sintaxe que a linguagem não implementa (`(atomic u32)`, `u32`, `region`, `let ((..))`,
-`+wrap`, `bit-and`, `atomic-load`...). Não são aceitos pelo verificador nem pela gramática e ficam fora
-dos testes. Atualização: os atômicos tipados agora existem (`(static x (atomic usize) 0)`, `atomic_load/store/fetch_add/cas` com ordem
-checada); veja `examples/atomic_counter.prova`. Estes arquivos continuam em `wip/` porque dependem de `u32`, ponteiros e
-algoritmos lock-free, que ainda não existem.
-`atomic_counter.prova` ainda tem um `)` sobrando na linha 86.
+- `ring_buffer.prova` foi portado para a sintaxe oficial da Prova, provado estaticamente (55 obrigações, 0 pendentes)
+  e movido para `examples/ring_buffer.prova` (testado em `tests/test_next_steps.py`).
+- `atomic_counter.prova` tem sua versão oficial e verificada em `examples/atomic_counter.prova`.
+- Os rascunhos restantes aqui usam sintaxe antiga (`u32` como parâmetro atômico) e são mantidos apenas como histórico.

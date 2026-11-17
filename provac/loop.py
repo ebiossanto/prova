@@ -23,7 +23,8 @@ def lock_of(text):
                          "effects": sorted(f.effects), "budget": f.budget,
                          "pre": [show(x) for x in f.pre], "post": [show(x) for x in f.post]}
     top = {"regions": sorted(meta["regions"]), "denies": sorted(meta["denies"]),
-           "statics": {k: [v, meta["static_init"][k]] for k, v in sorted(meta["statics"].items())}}
+           "statics": {k: [v, meta["static_init"][k]] for k, v in sorted(meta["statics"].items())},
+           "mmios": {k: [v["addr"], v["type"], v["region"]] for k, v in sorted(meta.get("mmios", {}).items())}}
     return funcs, top
 
 
@@ -44,6 +45,8 @@ def diff_lock(orig, cand):
         out.append(f"políticas deny-flow alteradas: eram {ot['denies']}, agora {ct['denies']}")
     if ot["statics"] != ct["statics"]:
         out.append("células static alteradas")
+    if ot.get("mmios", {}) != ct.get("mmios", {}):
+        out.append("registradores mmio alterados")
     return out
 
 

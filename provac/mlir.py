@@ -1,6 +1,6 @@
 """Emissor MLIR (dialetos func/arith/memref/cf/llvm). As provas viram otimizações:
 aritmética já provada sem overflow recebe flags nsw/nuw."""
-from .check import ARITH, CMP, ProvaError, base, is_slice, show, ty
+from .check import ARITH, BIT_OPS, CMP, MMIO_OPS, SHIFT_OPS, WRAP_OPS, ProvaError, base, is_slice, show, ty
 
 MLT = {"i64": "i64", "usize": "i64", "u8": "i8"}
 # Ordens de memória: nomes do dialeto `llvm` (relaxed = monotonic). NÃO validado com mlir-opt.
@@ -22,7 +22,7 @@ TRIPLE = {"x86_64": "x86_64-unknown-linux-gnu", "aarch64": "aarch64-unknown-linu
 class Em:
     def __init__(self, fn, cx, target, sigs=None, meta=None):
         self.fn, self.cx, self.target, self.sigs = fn, cx, target, sigs or {}
-        self.meta = meta or {"statics": {}, "static_init": {}}
+        self.meta = meta or {"statics": {}, "static_init": {}, "mmios": {}}
         self.o, self.n, self.term = [], 0, False
         self.params = {n for n, T in fn.params if not is_slice(T)}
 
@@ -85,6 +85,30 @@ class Em:
             name = {"+": "addi", "-": "subi", "*": "muli"}[op]
             flag = "nsw" if T == "i64" else "nuw"
             self.w(f"{r} = arith.{name} {a}, {b} overflow<{flag}> : {MLT[T]}")
+            return r, T
+        if op in WRAP_OPS:
+            T = ty(e, cx) or want or "usize"
+            a, _ = self.ex(e[1], T)
+            b, _ = self.ex(e[2], T)
+            r = self.t()
+            name = "addi" if op == "add_wrap" else "subi"
+            self.w(f"{r} = arith.{name} {a}, {b} : {MLT[T]}")
+            return r, T
+        if op in BIT_OPS:
+            T = ty(e, cx) or want or "usize"
+            a, _ = self.ex(e[1], T)
+            b, _ = self.ex(e[2], T)
+            r = self.t()
+            name = {"bit_and": "andi", "bit_or": "ori", "bit_xor": "xori"}[op]
+            self.w(f"{r} = arith.{name} {a}, {b} : {MLT[T]}")
+            return r, T
+        if op in SHIFT_OPS:
+            T = ty(e, cx) or want or "usize"
+            a, _ = self.ex(e[1], T)
+            b, _ = self.ex(e[2], T)
+            r = self.t()
+            name = "shli" if op == "shl" else ("shrsi" if T == "i64" else "shrui")
+            self.w(f"{r} = arith.{name} {a}, {b} : {MLT[T]}")
             return r, T
         if op in CMP:
             T = ty(e[1], cx) or ty(e[2], cx) or "i64"
@@ -159,6 +183,8 @@ class Em:
             return r, g.ret
         if op in ("atomic_load", "atomic_store", "atomic_fetch_add", "atomic_cas"):
             return self.atomic(e)
+        if op in MMIO_OPS:
+            return self.mmio(e)
         raise ProvaError(f"emissão: forma desconhecida {show(e)}")
 
     def atomic(self, e):
@@ -184,6 +210,23 @@ class Em:
         self.w(f"{c} = llvm.cmpxchg {p}, {v}, {n} {MO[e[4]]} {MO[e[5]]} : !llvm.ptr, i64")
         self.w(f"{r} = llvm.extractvalue {c}[0] : !llvm.struct<(i64, i1)>")
         return r, T
+
+    def mmio(self, e):
+        """Acesso volátil a registrador mapeado em memória (mmio nome endereco T regiao)."""
+        op, name = e[0], e[1]
+        info = self.meta["mmios"][name]
+        T, addr = info["type"], info["addr"]
+        align = 1 if T == "u8" else 8
+        a, p = self.t(), self.t()
+        self.w(f"{a} = arith.constant {addr} : i64")
+        self.w(f"{p} = llvm.inttoptr {a} : i64 to !llvm.ptr")
+        if op == "mmio_read":
+            r = self.t()
+            self.w(f"{r} = llvm.load volatile {p} {{alignment = {align} : i64}} : !llvm.ptr -> {MLT[T]}")
+            return r, T
+        v, _ = self.ex(e[2], T)
+        self.w(f"llvm.store volatile {v}, {p} {{alignment = {align} : i64}} : {MLT[T]}, !llvm.ptr")
+        return None, "unit"
 
     # ---- instruções ----
     def block(self, stmts):
@@ -212,7 +255,7 @@ class Em:
             self.w(f"memref.store {v}, %p_{s[1]}[{ix}] : memref<?xi8>")
         elif h == "do":
             self.ex(s[1])
-        elif h == "atomic_store":
+        elif h in ("atomic_store", "mmio_write"):
             self.ex(s)
         elif h in ("assert", "drop"):
             pass  # provado em tempo de compilação: nenhum código em tempo de execução
@@ -284,7 +327,7 @@ class Em:
 
 
 def emit_module(fns_cx, data_bytes, target, meta=None):
-    meta = meta or (fns_cx[0][1].meta if fns_cx else None) or {"statics": {}, "static_init": {}}
+    meta = meta or (fns_cx[0][1].meta if fns_cx else None) or {"statics": {}, "static_init": {}, "mmios": {}}
     parts = ["module {"]
     for name in meta["statics"]:
         parts.append(f"  llvm.mlir.global internal @{name}({meta['static_init'][name]} : i64) : i64")

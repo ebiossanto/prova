@@ -1,6 +1,6 @@
-"""Efeitos nas assinaturas: quem faz syscall ou usa atômicos TEM que declarar. Sem (effects ...) = função pura.
+"""Efeitos nas assinaturas: quem faz syscall, usa atômicos ou acessa MMIO TEM que declarar. Sem (effects ...) = função pura.
 Um efeito de um chamado propaga para o chamador (não existe efeito escondido atrás de uma chamada)."""
-from .check import ATOMIC_OPS, is_slice
+from .check import ATOMIC_OPS, MMIO_OPS, is_slice
 
 
 def direct(fn):
@@ -14,6 +14,8 @@ def direct(fn):
                 eff.add("syscall")
             elif h in ATOMIC_OPS:
                 eff.add("atomic")
+            elif h in MMIO_OPS:
+                eff.add("mmio")
             elif h == "call" and len(n) > 1 and isinstance(n[1], str):
                 calls.add(n[1])
             for x in n:
@@ -63,7 +65,8 @@ def mutated_params(fn, sigs, memo=None):
 
 
 def check_readonly_calls(fn, cx, sigs, memo):
-    """Fatia somente-leitura (de data) não pode ir a um parâmetro em que o chamado escreve."""
+    """Fatia somente-leitura (de data) não pode ir a um parâmetro em que o chamado escreve;
+    e a mesma fatia não pode ser passada duas vezes quando pelo menos um dos parâmetros é escrito (aliasing mutável)."""
     errs = []
 
     def walk(n):
@@ -71,9 +74,19 @@ def check_readonly_calls(fn, cx, sigs, memo):
             if n[0] == "call" and len(n) > 1 and n[1] in sigs:
                 g = sigs[n[1]]
                 gm = mutated_params(g, sigs, memo)
-                for (pn, _), a in zip(g.params, n[2:]):
-                    if pn in gm and isinstance(a, str) and a in cx.readonly:
-                        errs.append(f"{fn.name}: '{a}' é somente-leitura (vem de data), mas {g.name} escreve em '{pn}'")
+                seen_slices = {}
+                for (pn, PT), a in zip(g.params, n[2:]):
+                    if is_slice(PT) and isinstance(a, str):
+                        if pn in gm and a in cx.readonly:
+                            errs.append(f"{fn.name}: '{a}' é somente-leitura (vem de data), mas {g.name} escreve em '{pn}'")
+                        if a in seen_slices:
+                            prev_pn = seen_slices[a]
+                            if pn in gm or prev_pn in gm:
+                                w_pn = pn if pn in gm else prev_pn
+                                errs.append(f"{fn.name}: aliasing mutável de '{a}' em chamada a {g.name}: "
+                                            f"passada para '{prev_pn}' e '{pn}', mas {g.name} escreve em '{w_pn}'")
+                        else:
+                            seen_slices[a] = pn
             for x in n:
                 walk(x)
 

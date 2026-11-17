@@ -2,11 +2,12 @@
 
 NÃO é um backend: não gera código nativo. Serve para (1) EXECUTAR programas Prova onde não há LLVM e
 (2) validar o verificador: confere em tempo de execução tudo que ele prometeu (pre, post, invariantes,
-variante decrescente, limites, overflow, ordem das syscalls). Se um programa verificado violar algo aqui,
+variante decrescente, limites, overflow, shifts, ordem das syscalls). Se um programa verificado violar algo aqui,
 o bug é do verificador (ou do interpretador): é um teste diferencial."""
 import random
 
-from .check import ARITH, CMP, HI, LO, ProvaError, is_slice, show, slice_parts, ty
+from .check import (ARITH, BIT_OPS, CMP, HI, LO, MMIO_OPS, SHIFT_OPS, WIDTH, WRAP_OPS,
+                    ProvaError, is_slice, show, slice_parts, ty)
 
 FUEL = 5_000_000
 
@@ -37,11 +38,13 @@ class Slice:
 class Frame:
     def __init__(self, fn, cx):
         self.fn, self.cx, self.env, self.slices = fn, cx, {}, {}
+        self.env0, self.slices0 = {}, {}
 
 
 class Result:
-    def __init__(self, exit_code, out, err, statics, returned):
-        self.exit_code, self.stdout, self.stderr, self.statics, self.returned = exit_code, out, err, statics, returned
+    def __init__(self, exit_code, out, err, statics, returned, mmios=None):
+        self.exit_code, self.stdout, self.stderr = exit_code, out, err
+        self.statics, self.returned, self.mmios = statics, returned, mmios or {}
 
 
 class Machine:
@@ -50,31 +53,79 @@ class Machine:
         self.cx = {fn.name: cx for fn, cx in P.compiled}
         self.out, self.err = bytearray(), bytearray()
         self.statics = dict(P.meta["static_init"])
+        self.mmios = {k: 0 for k in P.meta.get("mmios", {})}
         self.steps = 0
 
+    def _wrap(self, v, T):
+        if T == "u8":
+            return v % 256
+        if T == "usize":
+            return v % (2**64)
+        return (v + 2**63) % (2**64) - 2**63
+
     # ---------- contratos (inteiros matemáticos, sem faixa) ----------
-    def gh(self, e, F, result=None):
+    def gh(self, e, F, result=None, in_old=False):
         if isinstance(e, int):
             return e
         if isinstance(e, str):
             if e == "result":
                 return result
-            return F.env[e]
+            return F.env0[e] if (in_old and e in F.env0) else F.env[e]
         op = e[0]
         if op in ARITH:
-            a, b = self.gh(e[1], F, result), self.gh(e[2], F, result)
+            a, b = self.gh(e[1], F, result, in_old), self.gh(e[2], F, result, in_old)
             return a + b if op == "+" else a - b if op == "-" else a * b
+        if op in WRAP_OPS:
+            T = ty(e, F.cx) or "usize"
+            a, b = self.gh(e[1], F, result, in_old), self.gh(e[2], F, result, in_old)
+            return self._wrap(a + b if op == "add_wrap" else a - b, T)
+        if op in BIT_OPS:
+            a, b = self.gh(e[1], F, result, in_old), self.gh(e[2], F, result, in_old)
+            return (a & b) if op == "bit_and" else (a | b) if op == "bit_or" else (a ^ b)
+        if op in SHIFT_OPS:
+            a, b = self.gh(e[1], F, result, in_old), self.gh(e[2], F, result, in_old)
+            return (a << b) if op == "shl" else (a >> b)
         if op in CMP:
-            a, b = self.gh(e[1], F, result), self.gh(e[2], F, result)
+            a, b = self.gh(e[1], F, result, in_old), self.gh(e[2], F, result, in_old)
             return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b, "=": a == b, "!=": a != b}[op]
         if op == "and":
-            return all(self.gh(x, F, result) for x in e[1:])
+            return all(self.gh(x, F, result, in_old) for x in e[1:])
         if op == "or":
-            return any(self.gh(x, F, result) for x in e[1:])
+            return any(self.gh(x, F, result, in_old) for x in e[1:])
         if op == "not":
-            return not self.gh(e[1], F, result)
+            return not self.gh(e[1], F, result, in_old)
         if op == "len":
-            return len(F.slices[e[1]].data)
+            buf = F.slices0[e[1]] if (in_old and e[1] in F.slices0) else F.slices[e[1]].data
+            return len(buf)
+        if op == "load":
+            b = e[1]
+            i = self.gh(e[2], F, result, in_old)
+            buf = F.slices0[b] if (in_old and b in F.slices0) else F.slices[b].data
+            if not 0 <= i < len(buf):
+                raise RunError(f"leitura fora dos limites em contrato: {show(e)} com índice {i} e tamanho {len(buf)}")
+            return buf[i]
+        if op == "old":
+            return self.gh(e[1], F, result, True)
+        if op == "forall":
+            _, var, lo_e, hi_e, body = e
+            lo = self.gh(lo_e, F, result, in_old)
+            hi = self.gh(hi_e, F, result, in_old)
+            if hi - lo > self.fuel:
+                raise Inconclusive("intervalo de forall excede o combustível")
+            saved = F.env.get(var)
+            try:
+                for k in range(lo, hi):
+                    F.env[var] = k
+                    if not self.gh(body, F, result, in_old):
+                        return False
+                return True
+            finally:
+                if saved is None:
+                    F.env.pop(var, None)
+                else:
+                    F.env[var] = saved
+        if op == "cast":
+            return self.gh(e[2], F, result, in_old)
         raise RunError(f"forma não avaliável em contrato: {show(e)}")
 
     def need(self, cond, what):
@@ -98,6 +149,26 @@ class Machine:
             a, b = self.ex(e[1], F, T), self.ex(e[2], F, T)
             v = a + b if op == "+" else a - b if op == "-" else a * b
             return self.fit(v, T, f"overflow em {show(e)}")
+        if op in WRAP_OPS:
+            T = ty(e, F.cx) or want or "usize"
+            a = self.fit(self.ex(e[1], F, T), T, f"operando em {show(e)}")
+            b = self.fit(self.ex(e[2], F, T), T, f"operando em {show(e)}")
+            return self._wrap(a + b if op == "add_wrap" else a - b, T)
+        if op in BIT_OPS:
+            T = ty(e, F.cx) or want or "usize"
+            a = self.fit(self.ex(e[1], F, T), T, f"operando em {show(e)}")
+            b = self.fit(self.ex(e[2], F, T), T, f"operando em {show(e)}")
+            v = (a & b) if op == "bit_and" else (a | b) if op == "bit_or" else (a ^ b)
+            return self._wrap(v, T)
+        if op in SHIFT_OPS:
+            T = ty(e, F.cx) or want or "usize"
+            W = WIDTH[T]
+            a = self.fit(self.ex(e[1], F, T), T, f"operando em {show(e)}")
+            b = self.fit(self.ex(e[2], F, T), T, f"deslocamento em {show(e)}")
+            if not 0 <= b < W:
+                raise RunError(f"shift fora da faixa em {show(e)}: deslocamento {b} fora de 0..{W - 1}")
+            v = (a << b) if op == "shl" else (a >> b)
+            return self._wrap(v, T)
         if op in CMP:
             a, b = self.ex(e[1], F), self.ex(e[2], F)
             return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b, "=": a == b, "!=": a != b}[op]
@@ -133,12 +204,13 @@ class Machine:
             return self.call(g.name, args)
         if op in ("atomic_load", "atomic_store", "atomic_fetch_add", "atomic_cas"):
             return self.atomic(e, F)
+        if op in MMIO_OPS:
+            return self.mmio_op(e, F)
         raise RunError(f"forma desconhecida: {show(e)}")
 
     def atomic(self, e, F):
         name = e[1]
         T = self.P.meta["statics"][name]
-        wrap = (lambda v: v % 2**64) if T == "usize" else (lambda v: (v + 2**63) % 2**64 - 2**63)
         old = self.statics[name]
         if e[0] == "atomic_load":
             return old
@@ -146,12 +218,20 @@ class Machine:
             self.statics[name] = self.fit(self.ex(e[2], F, T), T, f"atomic_store em {name}")
             return None
         if e[0] == "atomic_fetch_add":
-            self.statics[name] = wrap(old + self.ex(e[2], F, T))
+            self.statics[name] = self._wrap(old + self.ex(e[2], F, T), T)
             return old
         exp, new = self.ex(e[2], F, T), self.ex(e[3], F, T)
         if old == exp:
             self.statics[name] = new
         return old
+
+    def mmio_op(self, e, F):
+        name = e[1]
+        T = self.P.meta["mmios"][name]["type"]
+        if e[0] == "mmio_read":
+            return self.mmios.get(name, 0)
+        self.mmios[name] = self.fit(self.ex(e[2], F, T), T, f"mmio_write em {name}")
+        return None
 
     # ---------- instruções ----------
     def block(self, stmts, F):
@@ -169,12 +249,13 @@ class Machine:
             F.env[s[1]] = self.fit(self.ex(s[2], F, F.cx.types[s[1]]), F.cx.types[s[1]], f"set {s[1]}")
         elif h == "let_slice":
             F.slices[s[1]] = Slice(self.P.data[s[2][1]])
+            F.slices0.setdefault(s[1], bytes(F.slices[s[1]].data))
         elif h == "store":
             sl, i = F.slices[s[1]], self.ex(s[2], F, "usize")
             if not 0 <= i < len(sl.data):
                 raise RunError(f"escrita fora dos limites: {show(s)} com índice {i} e tamanho {len(sl.data)}")
             sl.data[i] = self.fit(self.ex(s[3], F, "u8"), "u8", f"store {show(s)}")
-        elif h in ("do", "atomic_store"):
+        elif h in ("do", "atomic_store", "mmio_write"):
             self.ex(s[1] if h == "do" else s, F)
         elif h == "assert":
             self.need(self.gh(s[1], F), f"assert falhou: {show(s[1])}")
@@ -220,6 +301,8 @@ class Machine:
                 F.slices[pn] = a
             else:
                 F.env[pn] = self.fit(a, PT, f"argumento {pn} de {name}")
+        F.env0 = dict(F.env)
+        F.slices0 = {k: bytes(v.data) for k, v in F.slices.items()}
         for p in fn.pre:
             self.need(self.gh(p, F), f"pré-condição de {name} violada: {show(p)}")
         ret = None
@@ -243,7 +326,7 @@ def run(P, entry="_start", args=(), check=True):
         code = 0
     except Exit as e:
         code = e.code
-    return Result(code, bytes(m.out), bytes(m.err), dict(m.statics), ret), m
+    return Result(code, bytes(m.out), bytes(m.err), dict(m.statics), ret, dict(m.mmios)), m
 
 
 # ---------- teste diferencial: entradas aleatórias que satisfazem a pre ----------
@@ -261,7 +344,7 @@ def gen_args(fn, rnd):
             args.append(Slice(bytes(rnd.randrange(256) for _ in range(n))))
         else:
             if pn in lens:
-                v = rnd.choice([0, 1, 2, 3, 4, 7, 16, 33, 100])
+                v = rnd.choice([0, 1, 2, 3, 4, 7, 16, 33, 64, 100])
             elif rnd.random() < 0.6:
                 v = max(LO[T], min(HI[T], rnd.choice(SMALL_POOL)))
             else:
@@ -288,6 +371,8 @@ def fuzz_function(P, name, runs=400, seed=1):
         F = Frame(fn, m.cx[name])
         for (pn, PT), a in zip(fn.params, args):
             (F.slices if is_slice(PT) else F.env)[pn] = a
+        F.env0 = dict(F.env)
+        F.slices0 = {k: bytes(v.data) for k, v in F.slices.items()}
         try:
             if not all(m.gh(p, F) for p in fn.pre):
                 continue

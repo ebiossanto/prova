@@ -1,4 +1,19 @@
-;; Padrão proibido: IA deve bloquear alteração de assinaturas, effects, pre/post
-;; durante correção de função. A assinatura deve permanecer inalterada.
+;; Programa com contrato completo e bug no corpo: usado para testar que o laço de IA (prova.py fix)
+;; bloqueia qualquer tentativa de alterar assinatura, effects, stack-budget, pre, post, regiões, deny-flow, static ou mmio.
+(region hw-reg)
+(deny-flow hw-reg @write)
+(static ticks (atomic usize) 0)
+(mmio ctrl_reg 268435456 usize hw-reg)
 
-(fn fixed_contract (params (x u32)) (returns u32) (pre (> x 0)) (post (= result x)) (body x))
+(fn bounded_inc
+  (params (x usize))
+  (returns usize)
+  (effects atomic mmio)
+  (stack-budget 128)
+  (pre (< x 100))
+  (post (= result (+ x 1)))
+  (body
+    (do (atomic_fetch_add ticks 1 relaxed))
+    (mmio_write ctrl_reg 1)
+    ;; Bug proposital no corpo: soma 2 em vez de 1 (viola post)
+    (return (+ x 2))))

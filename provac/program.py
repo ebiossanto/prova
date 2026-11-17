@@ -2,7 +2,7 @@
 (posse, efeitos, fluxo por região, orçamento de pilha)."""
 import re
 
-from .check import ATOMIC_T, HI, LO, Fn, ProvaError, check_call_graph, verify_fn
+from .check import ATOMIC_T, HI, LO, SCALARS, Fn, ProvaError, check_call_graph, verify_fn
 from .effects import check_effects, check_readonly_calls
 from .flow import SINK, analyse_program, check_denies
 from .linear import check_linear
@@ -19,11 +19,11 @@ class Program:
 
 def load_text(text):
     forms = parse(text)
-    data, regions, data_region, statics, static_init, denies, fns = {}, {"rodata"}, {}, {}, {}, [], []
+    data, regions, data_region, statics, static_init, mmios, denies, fns = {}, {"rodata"}, {}, {}, {}, {}, [], []
     for f in forms:
         if not isinstance(f, list) or not f or not isinstance(f[0], str):
             raise ProvaError(f"forma de topo inválida: {f!r} (esperado (fn ...), (data ...), (region ...), "
-                             f"(static ...) ou (deny-flow ...))")
+                             f"(static ...), (mmio ...) ou (deny-flow ...))")
         h = f[0]
         if h == "data":
             if len(f) not in (3, 4) or not isinstance(f[1], str):
@@ -42,6 +42,17 @@ def load_text(text):
             if not isinstance(f[3], int) or not LO[T] <= f[3] <= HI[T]:
                 raise ProvaError(f"valor inicial de '{f[1]}' fora da faixa de {T}")
             statics[f[1]], static_init[f[1]] = T, f[3]
+        elif h == "mmio":
+            if (len(f) != 5 or not isinstance(f[1], str) or not isinstance(f[2], int)
+                    or f[3] not in SCALARS or not isinstance(f[4], str)):
+                raise ProvaError(f"mmio espera (mmio nome endereco ({'|'.join(SCALARS)}) regiao)")
+            name, addr, T, reg = f[1], f[2], f[3], f[4]
+            align = 1 if T == "u8" else 8
+            if addr <= 0 or addr > HI["usize"] or addr % align != 0:
+                raise ProvaError(f"mmio '{name}': endereço {addr} inválido ou desalinhado para {T} (alinhamento {align})")
+            if name in mmios or name in statics:
+                raise ProvaError(f"mmio '{name}' duplicado")
+            mmios[name] = {"addr": addr, "type": T, "region": reg}
         elif h == "deny-flow":
             if len(f) != 3 or not all(isinstance(x, str) for x in f[1:]):
                 raise ProvaError("deny-flow espera (deny-flow ORIGEM DESTINO)")
@@ -50,16 +61,19 @@ def load_text(text):
             fns.append(Fn(f))
         else:
             raise ProvaError(f"forma de topo desconhecida: {h}")
-    ends = set(regions) | {SINK} | {"@static:" + s for s in statics}
+    ends = set(regions) | {SINK} | {"@static:" + s for s in statics} | {"@mmio:" + m for m in mmios}
     for d, r in data_region.items():
         if r not in regions:
             raise ProvaError(f"data '{d}': região '{r}' não declarada (use (region {r}))")
+    for m, info in mmios.items():
+        if info["region"] not in regions:
+            raise ProvaError(f"mmio '{m}': região '{info['region']}' não declarada (use (region {info['region']}))")
     for a, b in denies:
         for x in (a, b):
             if x not in ends:
-                raise ProvaError(f"deny-flow: '{x}' não é região declarada, {SINK} nem @static:NOME")
+                raise ProvaError(f"deny-flow: '{x}' não é região declarada, {SINK}, @static:NOME nem @mmio:NOME")
     meta = {"regions": regions, "data_region": data_region, "statics": statics,
-            "static_init": static_init, "denies": denies}
+            "static_init": static_init, "mmios": mmios, "denies": denies}
     return data, fns, meta
 
 

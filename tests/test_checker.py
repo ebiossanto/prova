@@ -11,7 +11,8 @@ from provac.sexp import ParseError  # noqa: E402
 EX = os.path.join(ROOT, "examples")
 GOOD = ["sum_to", "copy_bytes", "hello", "ok_own", "calls",
         "x86_64_start", "aarch64_start", "riscv64_start", "kmain_min",
-        "effects", "regions_flow", "stack_budget", "atomic_counter", "driver_demo", "packet_inspector", "selftest"]
+        "effects", "regions_flow", "stack_budget", "atomic_counter", "driver_demo",
+        "packet_inspector", "selftest", "ring_buffer"]
 
 
 def results(name):

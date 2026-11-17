@@ -10,7 +10,8 @@ from provac.mlir import emit_module  # noqa: E402
 EX = os.path.join(ROOT, "examples")
 GOOD = ["sum_to", "copy_bytes", "hello", "ok_own", "calls",
         "x86_64_start", "aarch64_start", "riscv64_start", "kmain_min",
-        "effects", "regions_flow", "stack_budget", "atomic_counter", "driver_demo", "packet_inspector", "selftest"]
+        "effects", "regions_flow", "stack_budget", "atomic_counter", "driver_demo",
+        "packet_inspector", "selftest", "ring_buffer"]
 TARGETS = ("x86_64", "aarch64", "riscv64")
 WRITE_NR = {"x86_64": 1, "aarch64": 64, "riscv64": 64}
 EXIT_NR = {"x86_64": 60, "aarch64": 93, "riscv64": 93}

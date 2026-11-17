@@ -1,4 +1,8 @@
-;; Padrão proibido: shift sem bounds check - o smt.py deve exigir prova de limites
-;; (shl x y) sem (pre (< y 32)) para u32 deve ser rejeitado
-
-(fn bad_shift (params (x u32) (y u32)) (returns u32) (pre) (post) (body (return (shl x y))))
+;; DEVE FALHAR: Shift sem prova de limite de bit-width (y pode ser >= 64, causando UB).
+(fn bad_shift
+  (params (x usize) (y usize))
+  (returns usize)
+  (pre)
+  (post)
+  (body
+    (return (shl x y))))
