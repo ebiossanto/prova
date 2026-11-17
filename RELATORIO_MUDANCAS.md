@@ -167,14 +167,19 @@ prova-corrigido/
 
 ---
 
-## 🔄 Próximos Passos Recomendados
+## 🔄 Próximos Passos Implementados (17/nov/2026)
 
-1. **Aplicar o patch 0003** (mais completo) sobre o repositório atual
-2. **Rodar `python tests/run_tests.py`** (97 testes)
-3. **Testar `python prova.py run examples/selftest.prova`** → deve imprimir `PASS`
-4. **Integrar com Z3** para provar mais obrigações
-5. **Validar MLIR** com `mlir-opt`/`llc` quando disponível
-6. **Desenvolver arrays/quantificadores** para conteúdo de fatias em contratos
+1. **Teoria de Arrays e Quantificadores em Contratos (`load`, `old`, `forall`, `occ`):**
+   - Implementada redução de McCarthy (*read-over-write*), congruência de Ackermann, Skolemização e cancelamento algébrico de ocorrências (`occ`) em `provac/linarith.py` + integração em processo com **Z3 5.4.1** (`provac/smt.py`).
+2. **Prova Estática Completa de Ordenação e Permutação (`examples/sort_perm.prova` + `lean/Prova/SortPerm.lean`):**
+   - `sort_perm.prova`: 67/67 obrigações provadas estaticamente (ordenação par-a-par com `forall` aninhado + preservação de multiconjunto com `occ`).
+   - `lean/Prova/SortPerm.lean`: certificado formal compilado sem erros no **Lean 4 (v4.36.0-rc2)** provando os axiomas de McCarthy, a preservação de `occ` em trocas (`occ_swap_preserved`) e o passo indutivo do Bubble Sort (`bubble_suffix_step`, `bubble_partition_step`).
+3. **MMIO Tipado com Regiões, Operadores Bitwise/Shift/Wrap e Ring Buffer SPSC (`examples/ring_buffer.prova`):**
+   - `(mmio nome endereco T regiao)`, `mmio_read`, `mmio_write`, efeito `mmio` e destino `@mmio:NOME` em `deny-flow`.
+   - `bit_and`, `bit_or`, `bit_xor`, `shl`, `shr` (com VC `0 <= y < width`) e `add_wrap`/`sub_wrap`.
+   - `examples/ring_buffer.prova`: 55/55 obrigações provadas estaticamente e execução validada.
+4. **Suíte de Testes Expandida:**
+   - **103 testes passando, 0 falhas** em `python tests/run_tests.py` (incluindo os 4 casos negativos de segurança em `tests/` e compilação dos certificados Lean 4).
 
 ---
 
