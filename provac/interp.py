@@ -104,6 +104,11 @@ class Machine:
             if not 0 <= i < len(buf):
                 raise RunError(f"leitura fora dos limites em contrato: {show(e)} com índice {i} e tamanho {len(buf)}")
             return buf[i]
+        if op == "occ":
+            b = e[1]
+            val = self.gh(e[2], F, result, in_old)
+            buf = F.slices0[b] if (in_old and b in F.slices0) else F.slices[b].data
+            return buf.count(val) if 0 <= val <= 255 else 0
         if op == "old":
             return self.gh(e[1], F, result, True)
         if op == "forall":
@@ -115,6 +120,9 @@ class Machine:
             saved = F.env.get(var)
             try:
                 for k in range(lo, hi):
+                    self.steps += 1
+                    if self.steps > self.fuel * 4:
+                        raise Inconclusive("limite de passos excedido em forall")
                     F.env[var] = k
                     if not self.gh(body, F, result, in_old):
                         return False

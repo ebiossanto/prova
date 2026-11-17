@@ -10,7 +10,7 @@ stmt     := (let x T e) | (var x T e) | (set x e) | (let_slice b (data-ref d)) |
           | (if c (then s...) (else s...)) | (while c (invariant e...) (decreases e) s...)
           | (assert e) | (do e) | (return [e]) | (sys_exit e) | (atomic_store cel v ordem) | (mmio_write reg v)
 expr     := inteiro | x | (+ - * add_wrap sub_wrap bit_and bit_or bit_xor shl shr a b)
-          | (< <= > >= = != a b) | (and/or/not ...) | (cast T e) | (len b) | (load b i)
+          | (< <= > >= = != a b) | (and/or/not ...) | (cast T e) | (len b) | (load b i) | (occ b v)
           | (old e) | (forall var inicio fim cond)
           | (sys_write fd b n) | (call f arg...)
           | (atomic_load cel ordem) | (atomic_fetch_add cel v ordem) | (atomic_cas cel esperado novo sucesso falha)
@@ -19,7 +19,7 @@ ordem    := relaxed | acquire | release | acq_rel | seq_cst
 ```
 
 ## Regras
-- **Contratos** usam inteiros matemáticos; o código executável tem todo overflow e deslocamento (`shl`/`shr`) provado dentro dos limites. `result` nomeia o retorno em `post`. `(load b i)`, `(old e)` e `(forall k inicio fim cond)` permitem expressar e provar propriedades sobre o conteúdo de fatias (ex.: cópia, preenchimento, troca de elementos). Uma `pre` contraditória é erro (tornaria toda prova vazia).
+- **Contratos** usam inteiros matemáticos; o código executável tem todo overflow e deslocamento (`shl`/`shr`) provado dentro dos limites. `result` nomeia o retorno em `post`. `(load b i)`, `(occ b v)`, `(old e)` e `(forall k inicio fim cond)` (inclusive aninhado) permitem expressar e provar propriedades completas sobre fatias, incluindo ordenação e preservação de multiconjunto/permutação (`sort_perm.prova`). Uma `pre` contraditória é erro (tornaria toda prova vazia).
 - **Laços**: todo `while` exige `invariant` e `decreases` (terminação). Sem recursão.
 - **Tipos estritos**: sem conversão implícita (`cast` explícito), sem sombreamento, índices são `usize`.
 - **Posse e aliasing**: `(own ...)` é consumido exatamente uma vez (`drop` ou movimento para um `own` de outra função). Passar a mesma fatia em dois parâmetros de uma chamada quando ao menos um é escrito é erro de aliasing mutável.

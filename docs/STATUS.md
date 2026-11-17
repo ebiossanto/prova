@@ -11,8 +11,8 @@ Legenda: ✅ funciona e tem teste · ⚠️ parcial ou não validado no ambiente
 | Overflow, limites, shifts (`shl`/`shr`), invariantes, terminação, `post` provados | ✅ | provador interno + Z3 opcional |
 | Tipos dependentes leves: comprimento da fatia no tipo, exigido nas chamadas | ✅ | |
 | Posse linear de fatias (`own`, `drop`, movimento) e proibição de aliasing mutável em chamadas | ✅ | `test_checker.py`, `test_next_steps.py` |
-| Conteúdo de fatias em contratos (`load`, `old`, `forall` limitado; ex.: "dst é cópia de src", `fill`, `swap`) | ✅ | teoria de arrays (McCarthy + Ackermann) e Skolemização/instanciação no provador interno (`test_next_steps.py`, `copy_bytes.prova`) |
-| Certificados Lean 4 para o que o SMT não fecha | ⚠️ | `lean/` tem definições e provas básicas (`Core.lean`, `Sexp.lean`, `Prova.lean`), ainda não integrado ao pipeline de emissão |
+| Conteúdo de fatias, permutação/multiconjunto (`occ`) e ordenação em contratos (`load`, `occ`, `old`, `forall` aninhado; ex.: `copy_bytes`, `fill`, `swap`, `sort_perm`) | ✅ | provador interno (McCarthy + Ackermann + cancelamento de `ite`) + Z3 (`z3-solver` 5.4.1 em processo) (`test_next_steps.py`, `sort_perm.prova`) |
+| Certificados Lean 4 (`lean/Prova/`) | ✅ | `Core.lean`, `Sexp.lean`, `Prova.lean` e `SortPerm.lean` (teoremas de McCarthy, preservação de multiconjunto em `swap` e passo indutivo de `sort`) compilados com Lean 4 (`v4.36.0-rc2`) em `test_next_steps.py` |
 
 ## Camada 2: sintaxe para IA
 | Item | Estado | Notas |

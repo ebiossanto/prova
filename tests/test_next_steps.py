@@ -184,3 +184,38 @@ def test_ring_buffer_example_is_proved_and_executes_spsc_cycle():
     # Fila vazia devolve status=0 e item=0
     r_empty, _ = run(P, "ring_pop", [64, buf, 1, status])
     assert r_empty.returned == 0 and status.data[0] == 0
+
+
+def test_sort_perm_full_static_proof_of_orderedness_and_multiset_permutation():
+    src = example("sort_perm")
+    P = build(src)
+    assert not problems(P) and not pending(P)
+
+    # Execução real: ordena vetor e preserva multiconjunto (conferido em runtime pelos contratos forall + occ)
+    for raw in (b"", b"\x05", b"\x09\x01\x05\x03\x05\x00", bytes(range(12, 0, -1))):
+        s = Slice(raw)
+        run(P, "sort_perm", [len(raw), s])
+        assert bytes(s.data) == bytes(sorted(raw))
+
+    # Mutação 1: comparação invertida (< x y) viola ESTATICAMENTE a prova de ordenação!
+    bad_ord = src.replace("(if (> x y)", "(if (< x y)")
+    err_ord = src_error(bad_ord)
+    assert err_ord and "(<= (load buf a) (load buf" in err_ord
+
+    # Mutação 2: sobrescrever elemento em vez de trocar ((store buf (+ j 1) y)) viola ESTATICAMENTE a permutação (occ)!
+    bad_perm = src.replace("(store buf (+ j 1) x)", "(store buf (+ j 1) y)")
+    err_perm = src_error(bad_perm)
+    assert err_perm and "(occ buf v)" in err_perm
+
+
+def test_lean4_certificates_compile_cleanly():
+    import shutil, subprocess
+    lean = shutil.which("lean") or os.path.expanduser("~/.elan/bin/lean.exe") or os.path.expanduser("~/.elan/bin/lean")
+    if not os.path.exists(lean):
+        print("SKIP (lean não instalado)")
+        return
+    for name in ("Core.lean", "Sexp.lean", "Prova.lean", "SortPerm.lean"):
+        path = os.path.join(ROOT, "lean", "Prova", name)
+        p = subprocess.run([lean, path], capture_output=True, text=True, encoding="utf-8", timeout=60)
+        assert p.returncode == 0 and not p.stdout.strip() and not p.stderr.strip(), (name, p.stdout, p.stderr)
+

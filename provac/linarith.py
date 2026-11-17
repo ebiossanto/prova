@@ -16,7 +16,7 @@ from math import gcd
 
 CMPS = ("<", "<=", ">", ">=", "=", "!=")
 BITOPS = ("bit_and", "bit_or", "bit_xor", "shl", "shr", "add_wrap", "sub_wrap")
-EXT_OPS = ("forall", "select", "store_arr") + BITOPS
+EXT_OPS = ("forall", "select", "store_arr", "occ", "ite") + BITOPS
 MAX_CASES = 2048
 MAX_CONS = 4000
 
@@ -368,16 +368,55 @@ def _reduce_ext(hyps, goal):
     base_reads = {}   # (arr_name, idx_poly_key) -> (var_name, idx_term)
     store_cache = {}  # (arr_term, idx_poly_key) -> var_name
     op_cache = {}     # (op, a_key, b_key) -> var_name
+    ld_defs = {h[1]: h[2] for h in hyps if isinstance(h, tuple) and len(h) == 3 and h[0] == "="
+               and isinstance(h[1], str) and h[1].startswith("ld!")
+               and isinstance(h[2], tuple) and h[2][0] == "select"}
 
     def pkey(t):
         return tuple(sorted(poly(t).items()))
 
     def rw(t):
-        if isinstance(t, (int, str)):
+        if isinstance(t, int):
+            return t
+        if isinstance(t, str):
+            if t in ld_defs:
+                return rw(ld_defs[t])
             return t
         op = t[0]
         if op == "forall":
             raise Giveup("forall aninhado não redutível")
+        if op == "occ":
+            arr, v = t[1], rw(t[2])
+            if isinstance(arr, tuple) and arr[0] == "store_arr":
+                _, base_a, s_idx, s_val = arr
+                return rw(("-", ("+", ("occ", base_a, v), ("ite", ("=", v, s_val), 1, 0)),
+                                ("ite", ("=", v, ("select", base_a, s_idx)), 1, 0)))
+            if not isinstance(arr, str):
+                raise Giveup("array base inválido em occ")
+            v_k = pkey(v)
+            bkey = ("occ!" + arr, v_k)
+            if bkey not in base_reads:
+                ov = f"occ!{arr}!{len(base_reads)}"
+                base_reads[bkey] = (ov, v)
+                extra.append(("<=", 0, ov))
+            return base_reads[bkey][0]
+        if op == "ite":
+            cond = t[1]
+            if not (isinstance(cond, tuple) and cond[0] == "=" and t[2] == 1 and t[3] == 0):
+                raise Giveup("ite genérico não suportado")
+            a, b = rw(cond[1]), rw(cond[2])
+            d = padd(poly(a), poly(b), -1)
+            if not d:
+                return 1
+            if tuple(d.keys()) == ((),) and d[()] != 0:
+                return 0
+            pair = tuple(sorted((pkey(a), pkey(b))))
+            okey = ("ite_eq", pair)
+            if okey not in op_cache:
+                iv = f"ite!{len(op_cache)}"
+                op_cache[okey] = iv
+                extra.append(("or", ("and", ("=", a, b), ("=", iv, 1)), ("and", ("!=", a, b), ("=", iv, 0))))
+            return op_cache[okey]
         if op == "select":
             arr = t[1]
             idx = rw(t[2])

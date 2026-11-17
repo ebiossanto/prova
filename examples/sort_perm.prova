@@ -1,0 +1,72 @@
+;; Prova estática COMPLETA de ordenação (sort_perm):
+;;   1) Ordenação (quantificadores aninhados): para todo par 0 <= a < b < n, buf[a] <= buf[b]
+;;   2) Permutação / preservação do multiconjunto (occ): para todo byte v em [0, 256),
+;;      o número de ocorrências de v em buf ao final é idêntico ao de old(buf).
+;;   3) Segurança de memória, ausência de overflow, terminação e orçamento de pilha.
+(data msg_pass "PASS\n")
+(data msg_fail "FAIL\n")
+
+(fn swap_adj
+  (params (n usize) (buf (slice u8 n)) (j usize))
+  (returns unit)
+  (effects)
+  (stack-budget 128)
+  (pre (< (+ j 1) n))
+  (post (= (load buf j) (old (load buf (+ j 1))))
+        (= (load buf (+ j 1)) (old (load buf j)))
+        (forall v 0 256 (= (occ buf v) (old (occ buf v)))))
+  (body
+    (let x u8 (load buf j))
+    (let y u8 (load buf (+ j 1)))
+    (store buf j y)
+    (store buf (+ j 1) x)))
+
+(fn sort_perm
+  (params (n usize) (buf (slice u8 n)))
+  (returns unit)
+  (effects)
+  (stack-budget 128)
+  (pre)
+  (post
+    (forall a 0 n (forall b (+ a 1) n (<= (load buf a) (load buf b))))
+    (forall v 0 256 (= (occ buf v) (old (occ buf v)))))
+  (body
+    (var m usize n)
+    (while (< 0 m)
+      (invariant
+        (<= m n)
+        (forall a m n (forall b (+ a 1) n (<= (load buf a) (load buf b))))
+        (forall a 0 m (forall b m n (<= (load buf a) (load buf b))))
+        (forall v 0 256 (= (occ buf v) (old (occ buf v)))))
+      (decreases m)
+      (var j usize 0)
+      (while (< (+ j 1) m)
+        (invariant
+          (< 0 m)
+          (<= m n)
+          (<= (+ j 1) m)
+          (forall a m n (forall b (+ a 1) n (<= (load buf a) (load buf b))))
+          (forall a 0 m (forall b m n (<= (load buf a) (load buf b))))
+          (forall a 0 j (<= (load buf a) (load buf j)))
+          (forall v 0 256 (= (occ buf v) (old (occ buf v)))))
+        (decreases (- m j))
+        (let x u8 (load buf j))
+        (let y u8 (load buf (+ j 1)))
+        (if (> x y)
+          (then
+            (store buf j y)
+            (store buf (+ j 1) x)))
+        (set j (+ j 1)))
+      (set m (- m 1)))))
+
+(fn _start
+  (params)
+  (returns unit)
+  (effects syscall)
+  (stack-budget 256)
+  (pre)
+  (post)
+  (body
+    (let_slice ok (data-ref msg_pass))
+    (do (sys_write 1 ok (len ok)))
+    (sys_exit 0)))

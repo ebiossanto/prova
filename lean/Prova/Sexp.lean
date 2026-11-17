@@ -37,10 +37,10 @@ partial def tokenize (cs : List Char) (acc : Array Tok) : Except String (Array T
       let body := rest.takeWhile (· != '"')
       match rest.dropWhile (· != '"') with
       | [] => .error "string não terminada"
-      | _ :: after => tokenize after (acc.push (.str (String.mk body)))
+      | _ :: after => tokenize after (acc.push (.str (String.ofList body)))
     else
       let body := cs.takeWhile (fun d => !isDelim d)
-      tokenize (cs.dropWhile (fun d => !isDelim d)) (acc.push (.atom (String.mk body)))
+      tokenize (cs.dropWhile (fun d => !isDelim d)) (acc.push (.atom (String.ofList body)))
 
 mutual
 partial def parseSexp (ts : Array Tok) (i : Nat) : Except String (Sexp × Nat) :=

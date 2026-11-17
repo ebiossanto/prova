@@ -5,7 +5,7 @@ from _util import ROOT, build, example
 from provac.interp import RunError, fuzz_function, run
 
 VERIFIED = ["sum_to", "copy_bytes", "calls", "effects", "regions_flow", "stack_budget", "atomic_counter",
-            "packet_inspector", "driver_demo", "ok_own", "selftest", "ring_buffer"]
+            "packet_inspector", "driver_demo", "ok_own", "selftest", "ring_buffer", "sort_perm"]
 
 
 def prog(body, statics="", params="", ret="unit", pre="", post=""):

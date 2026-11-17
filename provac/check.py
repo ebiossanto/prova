@@ -170,6 +170,12 @@ def ty(e, cx):
         if ty(e[2], cx) not in (None, "usize"):
             raise ProvaError(f"índice de fatia deve ser usize: {show(e)}; use (cast usize ...)")
         return "u8"
+    if op == "occ":
+        if len(e) != 3 or not isinstance(e[1], str) or e[1] not in cx.slice_names:
+            raise ProvaError(f"occ espera (occ fatia valor): {show(e)}")
+        if ty(e[2], cx) not in (None, "u8", "usize"):
+            raise ProvaError(f"valor de occ deve ser u8 ou usize: {show(e)}")
+        return "usize"
     if op == "old":
         if len(e) != 2:
             raise ProvaError(f"old espera (old expr): {show(e)}")
@@ -405,7 +411,6 @@ def ev(e, st, cx, ghost=False, want=None, in_old=False):
     if op == "forall":
         if not ghost:
             raise ProvaError(f"forall só é permitido em contratos/invariantes/assert: {show(e)}")
-        ty(e, cx)
         _, var, lo_e, hi_e, body = e
         lo_t = ev(lo_e, st, cx, True, "usize", in_old)
         hi_t = ev(hi_e, st, cx, True, "usize", in_old)
@@ -417,6 +422,13 @@ def ev(e, st, cx, ghost=False, want=None, in_old=False):
             cx.types.pop(var, None)
             st.env.pop(var, None)
         return ("forall", var, lo_t, hi_t, body_t)
+    if op == "occ":
+        if not ghost:
+            raise ProvaError(f"occ só é permitido em contratos/invariantes/assert: {show(e)}")
+        slice_len(e[1], st, cx)
+        vt = ev(e[2], st, cx, True, None, in_old)
+        arr = st.arr0[e[1]] if in_old else st.arr[e[1]]
+        return ("occ", arr, vt)
     if op == "load":
         L = slice_len(e[1], st, cx)
         i = ev(e[2], st, cx, ghost, "usize", in_old)
