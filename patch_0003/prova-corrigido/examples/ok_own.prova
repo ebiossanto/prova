@@ -1,0 +1,9 @@
+;; Posse linear: buf é consumido exatamente uma vez em todos os caminhos.
+(fn consume
+  (params (n usize) (buf (own (slice u8 n))))
+  (returns unit)
+  (pre (< 0 n))
+  (post)
+  (body
+    (store buf 0 1)
+    (drop buf)))

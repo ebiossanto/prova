@@ -5,9 +5,10 @@
 (fn _start
   (params)
   (returns unit)
+  (effects syscall)
   (pre)
   (post)
   (body
     (let_slice b (data-ref msg))
-    (do (sys_write 1 b 14))
+    (do (sys_write 1 b (len b)))
     (sys_exit 0)))

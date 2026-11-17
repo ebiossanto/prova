@@ -1,6 +1,6 @@
 """Verificação linear de posse: parâmetros (own T) devem ser consumidos (drop) exatamente uma vez
 em todos os caminhos. Uso depois de drop, drop duplo, drop em laço e vazamento são erros."""
-from .check import show, ATOMIC_ORDERS, PTR_REGIONS
+from .check import show
 
 
 def _names(e, acc):
@@ -20,7 +20,7 @@ def _exprs(s):
         return [s[2]]
     if h == "store":
         return list(s[1:])
-    if h in ("return", "assert", "do", "sys_exit"):
+    if h in ("return", "assert", "do", "sys_exit", "atomic_store"):
         return list(s[1:])
     if h in ("if", "while"):
         return [s[1]]
@@ -88,7 +88,7 @@ def _block(stmts, dropped, owned, errs, fn, sigs):
 
 def check_linear(fn, sigs=None):
     # Atomics are exempt from linear checking (like ptr regions)
-    owned = {n for n, T in fn.params if isinstance(T, list) and T[0] == "own" and not (len(T) >= 3 and (T[2] in PTR_REGIONS or T[2] in ATOMIC_ORDERS))}
+    owned = {n for n, T in fn.params if isinstance(T, list) and T[0] == "own"}
     errs = []
     dropped, term = _block(fn.body, set(), owned, errs, fn.name, sigs or {})
     if not term:

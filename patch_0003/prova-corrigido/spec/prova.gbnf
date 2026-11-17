@@ -1,0 +1,55 @@
+# Gramática GBNF (GGML/llama.cpp) da Prova, para constrained decoding: a IA só emite tokens válidos.
+# Ordem canônica das cláusulas de fn: params, returns, (effects), (stack-budget), pre, post, body.
+root     ::= ws top+
+top      ::= data | region | deny | static | fn
+data     ::= "(" ws "data" ws ident ws string (ws rident)? ws ")" ws
+region   ::= "(" ws "region" ws rident ws ")" ws
+deny     ::= "(" ws "deny-flow" ws endpoint ws endpoint ws ")" ws
+endpoint ::= rident | "@write" | "@static:" ident
+static   ::= "(" ws "static" ws ident ws "(" ws "atomic" ws ("i64" | "usize") ws ")" ws int ws ")" ws
+fn       ::= "(" ws "fn" ws ident ws params ws returns ws effects? ws budget? ws pre ws post ws body ws ")" ws
+params   ::= "(" ws "params" (ws param)* ws ")"
+param    ::= "(" ws ident ws ptype ws ")"
+ptype    ::= scalar | slice | "(" ws "own" ws slice ws ")"
+slice    ::= "(" ws "slice" ws "u8" ws ident (ws rident)? ws ")"
+scalar   ::= "i64" | "usize" | "u8"
+returns  ::= "(" ws "returns" ws (scalar | "unit") ws ")"
+effects  ::= "(" ws "effects" (ws effect)* ws ")"
+effect   ::= "syscall" | "atomic"
+budget   ::= "(" ws "stack-budget" ws int ws ")"
+pre      ::= "(" ws "pre" (ws expr)* ws ")"
+post     ::= "(" ws "post" (ws expr)* ws ")"
+body     ::= "(" ws "body" (ws stmt)* ws ")"
+stmt     ::= "(" ws ( "let" ws ident ws scalar ws expr
+                    | "var" ws ident ws scalar ws expr
+                    | "set" ws ident ws expr
+                    | "let_slice" ws ident ws "(" ws "data-ref" ws ident ws ")"
+                    | "store" ws ident ws expr ws expr
+                    | "atomic_store" ws ident ws expr ws order
+                    | "assert" ws expr
+                    | "do" ws expr
+                    | "drop" ws ident
+                    | "return" (ws expr)?
+                    | "sys_exit" ws expr
+                    | "if" ws expr (ws block)+
+                    | "while" ws expr ws inv ws dec (ws stmt)* ) ws ")"
+block    ::= "(" ws ("then" | "else") (ws stmt)* ws ")"
+inv      ::= "(" ws "invariant" (ws expr)* ws ")"
+dec      ::= "(" ws "decreases" ws expr ws ")"
+expr     ::= int | ident | "(" ws op (ws expr)+ ws ")"
+           | "(" ws "cast" ws scalar ws expr ws ")"
+           | "(" ws "len" ws ident ws ")"
+           | "(" ws "load" ws ident ws expr ws ")"
+           | "(" ws "sys_write" ws expr ws ident ws expr ws ")"
+           | "(" ws "call" ws ident (ws expr)* ws ")"
+           | "(" ws "atomic_load" ws ident ws order ws ")"
+           | "(" ws "atomic_fetch_add" ws ident ws expr ws order ws ")"
+           | "(" ws "atomic_cas" ws ident ws expr ws expr ws order ws order ws ")"
+order    ::= "relaxed" | "acquire" | "release" | "acq_rel" | "seq_cst"
+op       ::= "+" | "-" | "*" | "<=" | ">=" | "<" | ">" | "=" | "!=" | "and" | "or" | "not"
+ident    ::= [a-z_] [a-z0-9_]*
+rident   ::= [a-z_] [a-z0-9_-]*
+int      ::= "-"? [0-9]+
+string   ::= "\"" [^"]* "\""
+# comentário: ";" até o fim da linha (igual ao leitor)
+ws       ::= ([ \t\n] | ";" [^\n]* "\n")*

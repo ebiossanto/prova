@@ -1,6 +1,6 @@
--- Prova Lean 4 Front-end Port (Phase 2)
--- Minimal namespace following Core.lean patterns
--- Lean 4 version: 4.36.0-rc2 (verified: lean --version works)
+-- ATENÇÃO: ESBOÇO. Nada aqui verifica programas Prova: `checkProvaStub` devolve sempre o mesmo texto.
+-- O verificador real hoje é o Python em provac/. Fase 2 (porte para Lean 4) NÃO está concluída.
+-- Pendente: este arquivo está em lean/Prova/Prova.lean, mas o lakefile espera o módulo raiz `Prova`.
 
 namespace Prova
 
@@ -27,16 +27,16 @@ def mlirGlobals : List (String × String) := []
 def mlirFunctions : List (String × List String × String) := []
 
 -- Emit MLIR (simplified) - using _ for unused parameter
-def emitMLIR (_code : String) : String :=
+def emitMLIRStub (_code : String) : String :=
   "MLIR module: " ++ mlirModuleName
 
 -- Check function - using _ for unused parameter
-def checkProva (_src : String) : String :=
-  "Prova check: OK"
+def checkProvaStub (_src : String) : String :=
+  "STUB: nada foi verificado"
 
 -- Main entry point demonstration
 def mainDemo : String :=
-  "Lean 4 front-end operational"
+  "esboço do front-end Lean 4 (nada é verificado aqui)"
 
 -- End namespace
 end Prova

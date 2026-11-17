@@ -1,0 +1,9 @@
+;; Entrada de kernel bare-metal. O stub gerado por `prova.py boot --target T` configura a pilha,
+;; zera o .bss e chama kmain; o linker script gerado posiciona tudo. Veja boot/ e scripts/build.sh.
+(fn kmain
+  (params)
+  (returns unit)
+  (pre)
+  (post)
+  (body
+    (return)))

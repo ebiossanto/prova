@@ -4,15 +4,23 @@ Cada obrigação é (rótulo, hipóteses, objetivo): hipóteses => objetivo deve
 Termos: int | str (símbolo) | tupla (op, args...). Contratos usam inteiros matemáticos
 (sem overflow); o código executável tem overflow checado por obrigação.
 """
+from . import linarith
 from .sexp import Str
 
 LO = {"i64": -2**63, "usize": 0, "u8": 0}
 HI = {"i64": 2**63 - 1, "usize": 2**64 - 1, "u8": 255}
-SCALARS = ("i64", "usize", "u8", "i8")
+SCALARS = ("i64", "usize", "u8")
 ARITH = ("+", "-", "*")
 CMP = ("<", "<=", ">", ">=", "=", "!=")
-PTR_REGIONS = ("mmio", "ram", "rom")
-ATOMIC_ORDERS = ("acq-rel", "relaxed", "acq-cst", "rel-cst")
+EFFECTS = ("syscall", "atomic")
+ORDERS = ("relaxed", "acquire", "release", "acq_rel", "seq_cst")
+ATOMIC_T = ("i64", "usize")  # tipos permitidos em (static nome (atomic T) init)
+ATOMIC_OPS = ("atomic_load", "atomic_store", "atomic_fetch_add", "atomic_cas")
+LOAD_ORD = ("relaxed", "acquire", "seq_cst")
+STORE_ORD = ("relaxed", "release", "seq_cst")
+FAIL_ORD = ("relaxed", "acquire", "seq_cst")
+# falha do cas não pode ser mais forte que o sucesso
+STRONGER_OK = {"relaxed": ORDERS, "acquire": ("acquire", "acq_rel", "seq_cst"), "seq_cst": ("seq_cst",)}
 
 
 class ProvaError(Exception):
@@ -40,15 +48,12 @@ def is_slice(T):
     return isinstance(T, list) and T[0] == "slice"
 
 
-def is_ptr(T):
-    T = base(T)
-    return isinstance(T, list) and T[0] == "own" and len(T) >= 3 and T[1] == "ptr"
-
-
-def is_atomic(T):
-    T = base(T)
-    # base returns the inner type string (e.g., "atomic", "ptr", "slice")
-    return T == "atomic"
+def slice_parts(T):
+    """(comprimento, região|None) de (slice u8 n [região]) ou (own (slice u8 n [região]))."""
+    B = base(T)
+    if len(B) not in (3, 4) or B[1] != "u8":
+        raise ProvaError(f"tipo de fatia inválido: {show(T)} (esperado (slice u8 n [região]))")
+    return B[2], (B[3] if len(B) == 4 else None)
 
 
 class Fn:
@@ -57,6 +62,7 @@ class Fn:
         self.params, self.ret = [], "unit"
         self.pre, self.post, self.body = [], [], []
         self.has_pre = self.has_post = False
+        self.effects, self.budget = set(), None
         for c in form[2:]:
             h = c[0]
             if h == "params":
@@ -71,6 +77,15 @@ class Fn:
                 self.has_post = True
             elif h == "body":
                 self.body = c[1:]
+            elif h == "effects":
+                bad = [x for x in c[1:] if x not in EFFECTS]
+                if bad:
+                    raise ProvaError(f"{self.name}: efeito desconhecido {bad} (válidos: {list(EFFECTS)})")
+                self.effects |= set(c[1:])
+            elif h == "stack-budget":
+                if len(c) != 2 or not isinstance(c[1], int) or c[1] <= 0:
+                    raise ProvaError(f"{self.name}: (stack-budget N) exige um inteiro positivo de bytes")
+                self.budget = c[1]
             else:
                 raise ProvaError(f"{self.name}: cláusula desconhecida '{h}'")
         if not (self.has_pre and self.has_post):
@@ -90,10 +105,15 @@ class St:
 
 
 class Cx:
-    def __init__(self, fn, data, sigs=None):
+    def __init__(self, fn, data, sigs=None, meta=None):
         self.fn, self.data, self.sigs = fn, data, sigs or {}
+        self.meta = meta or {"regions": {"rodata"}, "data_region": {}, "statics": {}}
         self.types, self.mut, self.slice_names = {}, set(), set()
+        self.slice_region = {}  # nome da fatia -> região declarada (None = sem região)
+        self.readonly = set()   # fatias vindas de (data ...): memória somente-leitura
+        self.decl = {}          # variável -> id do comando que a declarou
         self.obs, self.k = [], 0
+        self.pre_contradictory = False
 
     def fresh(self, base_):
         self.k += 1
@@ -158,14 +178,65 @@ def ty(e, cx):
             raise ProvaError(f"{g.name} espera {len(g.params)} argumentos, recebeu {len(e) - 2}")
         for (pn, PT), a in zip(g.params, e[2:]):
             if is_slice(PT):
-                if a not in cx.slice_names:
+                if not isinstance(a, str) or a not in cx.slice_names:
                     raise ProvaError(f"{g.name}: argumento '{pn}' exige uma fatia, recebeu {show(a)}")
+                want_r, have_r = slice_parts(PT)[1], cx.slice_region.get(a)
+                if want_r is not None and have_r != want_r:
+                    raise ProvaError(f"{g.name}: região incompatível em '{pn}': exige {want_r}, '{a}' está em "
+                                     f"{have_r or 'nenhuma região'}")
             else:
                 ta = ty(a, cx)
                 if ta not in (None, PT):
                     raise ProvaError(f"{g.name}: argumento '{pn}' é {PT}, recebeu {ta}; use (cast {PT} ...)")
         return g.ret
+    if op in ATOMIC_OPS:
+        return atomic_ty(e, cx)
     raise ProvaError(f"forma desconhecida: {show(e)}")
+
+
+def static_type(name, cx):
+    if not isinstance(name, str) or name not in cx.meta["statics"]:
+        raise ProvaError(f"'{show(name)}' não é um (static ...) atômico declarado")
+    return cx.meta["statics"][name]
+
+
+def check_order(e, o, allowed, what):
+    if o not in ORDERS:
+        raise ProvaError(f"ordem de memória desconhecida '{show(o)}' em {show(e)} (válidas: {list(ORDERS)})")
+    if o not in allowed:
+        raise ProvaError(f"ordem '{o}' é ilegal em {what}: use uma de {list(allowed)} em {show(e)}")
+
+
+def atomic_vals(e):
+    """Operandos de valor de uma operação atômica (sem a célula e sem as ordens)."""
+    n = {"atomic_load": 0, "atomic_store": 1, "atomic_fetch_add": 1, "atomic_cas": 2}[e[0]]
+    return list(e[2:2 + n])
+
+
+def atomic_ty(e, cx):
+    op = e[0]
+    n_args = {"atomic_load": 3, "atomic_store": 4, "atomic_fetch_add": 4, "atomic_cas": 6}[op]
+    if len(e) != n_args:
+        raise ProvaError(f"aridade inválida em {show(e)}")
+    T = static_type(e[1], cx)
+    for v in atomic_vals(e):
+        tv = ty(v, cx)
+        if tv not in (None, T):
+            raise ProvaError(f"{op} em '{e[1]}' ({T}) recebeu {tv}: {show(e)}; use (cast {T} ...)")
+    if op == "atomic_load":
+        check_order(e, e[2], LOAD_ORD, "atomic_load")
+        return T
+    if op == "atomic_store":
+        check_order(e, e[3], STORE_ORD, "atomic_store")
+        return "unit"
+    if op == "atomic_fetch_add":
+        check_order(e, e[3], ORDERS, "atomic_fetch_add")
+        return T
+    check_order(e, e[4], ORDERS, "atomic_cas (sucesso)")
+    check_order(e, e[5], FAIL_ORD, "atomic_cas (falha)")
+    if e[4] not in STRONGER_OK[e[5]]:
+        raise ProvaError(f"atomic_cas: a ordem de falha '{e[5]}' é mais forte que a de sucesso '{e[4]}': {show(e)}")
+    return T
 
 
 def slice_len(b, st, cx):
@@ -244,6 +315,18 @@ def ev(e, st, cx, ghost=False, want=None):
         if ghost:
             raise ProvaError("chamada em contrato não suportada")
         return do_call(e, st, cx)
+    if op in ATOMIC_OPS:
+        if ghost:
+            raise ProvaError("operação atômica em contrato não suportada (o valor depende de outras threads)")
+        atomic_ty(e, cx)  # valida aridade, tipos e ordens
+        T = static_type(e[1], cx)
+        for v in atomic_vals(e):
+            arg_range(cx, st, v, ev(v, st, cx, False, T), T)
+        if op == "atomic_store":
+            return 0
+        r = cx.fresh("atm")  # valor lido: qualquer valor do tipo (outras threads podem ter escrito)
+        st.path.append(rng(r, T))
+        return r
     raise ProvaError(f"forma desconhecida: {show(e)}")
 
 
@@ -277,20 +360,17 @@ def do_call(e, st, cx):
     return r
 
 
-def declare(cx, x, T, mut):
+def declare(cx, x, T, mut, node):
+    """Declara x. O MESMO comando executado em outro caminho (depois de um `if` que bifurcou estados) não é
+    redeclaração; outro comando com o mesmo nome é (sem sombreamento)."""
+    if x in cx.types and cx.decl.get(x) == id(node) and cx.types[x] == T:
+        return
     if x in cx.types or x in cx.slice_names or x == "result":
         raise ProvaError(f"redeclaração de '{x}' (sem sombreamento)")
-    if T not in SCALARS and not is_ptr(T) and not is_atomic(T):
+    if T not in SCALARS:
         raise ProvaError(f"tipo inválido para variável: {show(T)}")
-    if isinstance(T, list) and T[0] == "ptr":
-        region = T[2]
-        if region not in PTR_REGIONS:
-            raise ProvaError(f"região inválida: {region}")
-    if isinstance(T, list) and T[0] == "atomic":
-        # T[1] == "atomic", T[2] == scalar type (u32, u64, etc.)
-        # We don't validate the order here; it's checked at usage sites
-        pass
     cx.types[x] = T
+    cx.decl[x] = id(node)
     if mut:
         cx.mut.add(x)
 
@@ -324,7 +404,7 @@ def step(s, st, cx):
     h = s[0]
     if h in ("let", "var"):
         _, x, T, e = s
-        declare(cx, x, T, h == "var")
+        declare(cx, x, T, h == "var", s)
         st.env[x] = assign_check(cx, st, e, T)
         return [st]
     if h == "set":
@@ -338,11 +418,15 @@ def step(s, st, cx):
         if src[0] != "data-ref" or src[1] not in cx.data:
             raise ProvaError(f"let_slice espera (data-ref nome) válido: {show(s)}")
         cx.slice_names.add(b)
+        cx.slice_region[b] = cx.meta["data_region"].get(src[1], "rodata")
+        cx.readonly.add(b)
         st.slices[b] = cx.data[src[1]]
         return [st]
     if h == "store":
         _, b, i, v = s
         L = slice_len(b, st, cx)
+        if b in cx.readonly:
+            raise ProvaError(f"escrita em fatia somente-leitura '{b}' (vem de data): {show(s)}")
         if ty(i, cx) not in (None, "usize"):
             raise ProvaError(f"índice de fatia deve ser usize: {show(s)}; use (cast usize ...)")
         it = ev(i, st, cx)
@@ -361,6 +445,9 @@ def step(s, st, cx):
         return [st]
     if h == "do":
         ev(s[1], st, cx)
+        return [st]
+    if h == "atomic_store":
+        ev(s, st, cx)
         return [st]
     if h == "drop":
         return [st]
@@ -448,16 +535,19 @@ def run(stmts, sts, cx):
     return sts
 
 
-def verify_fn(fn, data, sigs=None):
-    cx, st = Cx(fn, data, sigs), St()
+def verify_fn(fn, data, sigs=None, meta=None):
+    cx, st = Cx(fn, data, sigs, meta), St()
     for n, T in fn.params:
         if is_slice(T):
-            _, el, ln = base(T)
-            if el != "u8" or ln not in st.env:
+            ln, region = slice_parts(T)
+            if ln not in st.env:
                 raise ProvaError(f"{fn.name}: fatia '{n}' exige comprimento declarado antes: (slice u8 n)")
+            if region is not None and region not in cx.meta["regions"]:
+                raise ProvaError(f"{fn.name}: região '{region}' não declarada (use (region {region}))")
             cx.slice_names.add(n)
+            cx.slice_region[n] = region
             st.slices[n] = st.env[ln]
-        elif T in SCALARS or is_atomic(T):
+        elif T in SCALARS:
             cx.types[n] = T
             st.env[n] = n
             st.path.append(rng(n, T))
@@ -467,6 +557,7 @@ def verify_fn(fn, data, sigs=None):
         if ty(p, cx) != "bool":
             raise ProvaError(f"pre não booleana: {show(p)}")
         st.path.append(ev(p, st, cx, True))
+    cx.pre_contradictory = linarith.contradictory(st.path)
     ends = run(fn.body, [st], cx)
     for e in ends:
         if e.exited:

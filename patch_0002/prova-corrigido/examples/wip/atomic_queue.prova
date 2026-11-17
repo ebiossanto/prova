@@ -1,0 +1,57 @@
+;; MPMC Queue using atomic types
+;; Demonstrates: atomic types, acq-rel ordering, linear exemption
+
+;; Queue cell: (atomic u32) - an atomic unsigned 32-bit value
+;; acq-rel ordering used for push/pop operations
+
+;; Conceptual queue structure (simplified for Prova):
+;; - Cell 0: head pointer (atomic u32 acq-rel)
+;; - Cell 1: tail pointer (atomic u32 acq-rel)  
+;; - Cell 2: data slot 0 (atomic u32)
+;; - Cell 3: data slot 1 (atomic u32)
+
+;; Producer function: pushes one item
+;; The atomic type on head/tail ensures no data races,
+;; while the linear exemption allows both producer and consumer
+;; to hold references simultaneously.
+
+;; In a full implementation, would need:
+;; - Power-of-2 buffer size for modular arithmetic
+;; - Padding between cells for false sharing prevention
+;; - Memory barriers beyond acq-rel if needed
+;; - Termination detection for consumer
+
+;; This example demonstrates the TYPE SYNTAX and LINEAR EXEMPTION
+;; The full algorithm would be implemented in assembly or C
+;; where atomic operations are natively supported.
+
+;; For Prova, the key value is that atomic types:
+;; 1. Are exempt from linear possession checking
+;; 2. Can be shared across functions/threads
+;; 3. Support acq-rel, relaxed, acq-cst, rel-cst ordering
+;; 4. Emit !volatile memref operations in MLIR
+
+;; Producer function: pushes one item
+(fn queue_push
+  (params (q (atomic u32)) (data u32) (ok u32))
+  (returns u32)
+  (pre)
+  (post (= ok 1))
+  (body
+    (do
+      ;; Conceptual: atomically store data and advance head
+      (return 1)
+    )
+  )
+)
+
+;; Consumer: pops one item
+(fn queue_pop
+  (params (q (atomic u32))) 
+  (returns u32)
+  (pre)
+  (post)
+  (body
+    (return 0)
+  )
+)

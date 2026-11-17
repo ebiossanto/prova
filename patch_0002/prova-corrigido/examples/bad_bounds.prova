@@ -1,0 +1,13 @@
+;; DEVE FALHAR: (<= i len) permite i = len, e o store sai do buffer.
+(fn fill
+  (params (n usize) (dst (slice u8 n)) (len usize))
+  (returns unit)
+  (pre (<= len n))
+  (post)
+  (body
+    (var i usize 0)
+    (while (<= i len)
+      (invariant (<= i len))
+      (decreases (- len i))
+      (store dst i 0)
+      (set i (+ i 1)))))

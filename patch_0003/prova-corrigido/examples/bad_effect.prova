@@ -1,0 +1,20 @@
+;; DEVE FALHAR: `wrapper` se declara pura, mas chama `noisy`, que faz syscall.
+(data msg "x\n")
+
+(fn noisy
+  (params)
+  (returns unit)
+  (effects syscall)
+  (pre)
+  (post)
+  (body
+    (let_slice b (data-ref msg))
+    (do (sys_write 1 b (len b)))))
+
+(fn wrapper
+  (params)
+  (returns unit)
+  (effects)
+  (pre)
+  (post)
+  (body (do (call noisy))))

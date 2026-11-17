@@ -1,0 +1,1312 @@
+diff --git a/README.md b/README.md
+index 1d9ff57..5426653 100644
+--- a/README.md
++++ b/README.md
+@@ -27,6 +27,7 @@ O humano audita só os contratos (`prova.py audit`); a IA corrige o corpo e **n
+ | **Laço fechado com a IA** com contratos travados (`prova.py fix`) | ✅ mecânica, com modelo de teste determinístico; plugue seu modelo via `--model-cmd` | `test_fix_loop.py` |
+ | Provador linear interno (Fourier–Motzkin + McCormick), sem Z3 | ✅ sólido por fuzzing; incompleto | `test_linarith_fuzz.py` |
+ | Gramática GBNF para constrained decoding | ✅ testada com mini-interpretador | `test_grammar.py` |
++| **Execução** (`prova.py run`): interpretador de referência que confere pre/post/invariantes/variante/limites/overflow em tempo de execução; teste diferencial contra o verificador | ✅ (não é código nativo) | `test_run.py`, `test_packet_inspector.py` |
+ | Emissão MLIR para 3 alvos, syscalls por arquitetura | ⚠️ texto gerado e estrutura testada; **nunca passou por `mlir-opt`/`llc`** | `test_emit.py` |
+ | Boot bare-metal x86-64 (pilha, `.bss`, linker script) | ✅ montado, ligado e **executado** | `test_boot.py` |
+ | Boot AArch64 e RISC-V | ⚠️ só estrutura (sem toolchain/QEMU) | `test_boot.py` |
+@@ -41,6 +42,7 @@ python prova.py check  examples/sum_to.prova            # relatório (--json p/
+ python prova.py audit  examples/regions_flow.prova      # SÓ contratos, efeitos, regiões, políticas: o que o humano audita
+ python prova.py flow   examples/bad_flow.prova [--dot]  # por onde os dados passam entre regiões (e violações de política)
+ python prova.py stack  examples/stack_budget.prova [--frames frames.json]
++python prova.py run    examples/packet_inspector.prova  # executa (interpretador de referência) e devolve o código de saída do programa
+ python prova.py emit   examples/hello.prova --target aarch64
+ python prova.py fix    prog.prova --model-cmd "SEU_COMANDO" [--max-iter 5] [--out novo.prova]
+ python prova.py boot   --target riscv64 --part asm      # stub de boot (--part ld: linker script; --entry NOME)
+@@ -51,13 +53,38 @@ imprime o fonte `.prova` completo. O laço só aceita candidatos que preservam a
+ `stack-budget`, regiões, `deny-flow` e `static` de cada função original; tentar "consertar" enfraquecendo o contrato é
+ rejeitado e o modelo recebe esse feedback. Veja `tests/fake_model.py`.
+ 
++## Programa de teste: `examples/packet_inspector.prova`
++Um inspetor de pacotes que usa tudo junto: região `net-rx` com política `deny-flow net-rx @write`, validação (tamanho mínimo e byte
++mágico), checksum com cota provada (`result ≤ 255·n`), contadores em células atômicas, veredito por syscall e código de saída = pacotes
++aceitos. É totalmente provado (60 obrigações). Executando:
++```
++$ python prova.py run examples/packet_inspector.prova
++ACCEPT
++DROP
++DROP                                   # código de saída do processo: 1
++```
++`tests/test_packet_inspector.py` introduz 6 bugs realistas (laço `<=`, falta de checagem de tamanho, vazamento para a saída, efeito
++esquecido, pilha curta, checksum errado): o verificador recusa cada um pelo motivo certo e o bug do laço também falha ao executar.
++O `run` só executa programas que passaram na verificação (`--force` ignora isso).
++
++## Programa de teste que se autotesta: `examples/selftest.prova`
++Seis funções (`gcd`, `sum_bytes`, `count_byte`, `max_byte`, `sort`, `reverse`) e um `_start` que confere resultados esperados e escreve
++`PASS` ou `FAIL` (código de saída 0 ou 1). Estaticamente, tudo é provado (sem overflow, sem acesso fora dos limites, todo laço termina,
++nenhum dado da região `input` chega à saída). `python prova.py run examples/selftest.prova` imprime `PASS`.
++
++Ele mostra, de propósito, **o limite atual**: a Prova ainda não expressa "o vetor ficou ordenado" em contrato (conteúdo de fatias não é
++modelado). Um `sort` com a comparação invertida é aceito pelo verificador (é seguro, só está errado); quem o pega é a execução em
++`tests/test_selftest.py`, que compara `sort`, `reverse`, `gcd`, `sum_bytes`, `count_byte` e `max_byte` com o Python em centenas de
++entradas aleatórias. Um achado real do verificador: sem `(pre (<= n 1000000))`, `reverse` falha com o contraexemplo `lo = hi = n = 2^64-1`
++(a condição `(+ lo 1)` do laço estouraria).
++
+ ## Testes
+ ```
+ python tests/run_tests.py        # sem dependências; sai com código != 0 se algo falhar
+ python tests/run_tests.py -k emit
+ ```
+ `pytest tests/` também funciona. O CI (`.github/workflows/ci.yml`) roda em Linux e Windows.
+-Testado localmente em Python 3.12 (68 testes).
++Testado localmente em Python 3.12 (97 testes).
+ 
+ ## Estrutura
+ ```
+@@ -77,6 +104,7 @@ docs/      STATUS.md · archive/ (documentos antigos; contêm afirmações não
+ - Contratos podem estar errados: a prova garante o programa contra o contrato, não o contrato contra a intenção.
+ - "Nunca estoura memória" vale só contra os limites declarados; alocação dinâmica ainda não existe, e a pilha usa um modelo de custo
+   até que se informe `--frames` medidos no backend.
++- `run` é um interpretador de referência, não um backend: sem entrada (stdin/argumentos), só `write`/`exit`, e a velocidade é a do Python.
+ - Fluxo de dados: só fluxo explícito de valores; fluxo implícito (por `if`/`while`) e vazamento por comprimento não são rastreados.
+ - Atômicos: a Prova garante tipos e ordens legais e que só células atômicas são compartilhadas; **não** verifica que a ordem escolhida
+   baste para a correção de um algoritmo lock-free.
+diff --git a/docs/STATUS.md b/docs/STATUS.md
+index b695a39..4c58f60 100644
+--- a/docs/STATUS.md
++++ b/docs/STATUS.md
+@@ -28,6 +28,9 @@ Legenda: ✅ funciona e tem teste · ⚠️ parcial ou não validado no ambiente
+ | Regiões nos tipos, relatório de fluxo (`flow`, `--dot`), `deny-flow` transitivo | ✅ | só fluxo explícito de valores |
+ | Orçamento de pilha pelo grafo de chamadas | ⚠️ | quadros de um modelo de custo; `--frames` aceita medidas do backend (não testado contra LLVM real) |
+ | Memória concorrente: `static` atômico, ordens tipadas, emissão `llvm.load/store atomic`, `atomicrmw`, `cmpxchg` | ⚠️ | tipos e ordens testados; sintaxe MLIR atômica **não validada**; sem threads nem verificação de protocolos lock-free |
++| Execução: interpretador de referência (`run`) com checagem de contratos e teste diferencial | ✅ | não é código nativo; sem stdin/argumentos; execução longa demais é *inconclusiva*, nunca violação |
++| Programas de teste executáveis (`selftest`, `packet_inspector`) | ✅ | provados estaticamente e executados; correção funcional de `sort`/`reverse` só por execução (arrays em contratos ❌) |
++| Compilação até binário nativo (MLIR → LLVM → ELF) | ❌ não validado | exige LLVM/MLIR, ausente no desenvolvimento |
+ | Syscalls por arquitetura (números e registradores) | ✅ texto | `write` e `exit`; MLIR nunca passou por `mlir-opt`/`llc` |
+ | Registradores da CPU como recursos lineares | ❌ | |
+ | MMIO / ponteiros com regiões | ❌ | |
+diff --git a/examples/packet_inspector.prova b/examples/packet_inspector.prova
+new file mode 100644
+index 0000000..981d087
+--- /dev/null
++++ b/examples/packet_inspector.prova
+@@ -0,0 +1,105 @@
++;; Programa de teste de ponta a ponta: um INSPETOR DE PACOTES.
++;;   - pacotes chegam na região net-rx; a política proíbe que dado de net-rx saia pela saída (@write);
++;;   - cada pacote é validado (tamanho mínimo + byte mágico 'P' = 80) e, se válido, somado (checksum);
++;;   - contadores e o último checksum ficam em células atômicas (a única memória compartilhada);
++;;   - o veredito ("ACCEPT"/"DROP") sai por syscall; o código de saída é o número de pacotes aceitos.
++;; Tudo é provado: sem overflow, sem acesso fora dos limites, terminação, contratos, efeitos, pilha e política.
++;;   python prova.py check|audit|flow|stack|emit|run examples/packet_inspector.prova
++(region net-rx)
++(deny-flow net-rx @write)
++
++(static accepted (atomic usize) 0)
++(static dropped (atomic usize) 0)
++(static last_sum (atomic usize) 0)
++
++(data pkt_ok "PING hello" net-rx)
++(data pkt_bad "xyz" net-rx)
++(data pkt_short "P" net-rx)
++(data msg_ok "ACCEPT\n")
++(data msg_drop "DROP\n")
++
++;; Soma dos bytes. Cota provada: cada byte vale no máximo 255, logo a soma nunca passa de 255*n.
++(fn checksum
++  (params (n usize) (buf (slice u8 n net-rx)))
++  (returns usize)
++  (effects)
++  (stack-budget 128)
++  (pre (<= n 4096))
++  (post (<= result (* 255 n)))
++  (body
++    (var i usize 0)
++    (var s usize 0)
++    (while (< i n)
++      (invariant (<= i n) (<= s (* 255 i)))
++      (decreases (- n i))
++      (set s (+ s (cast usize (load buf i))))
++      (set i (+ i 1)))
++    (return s)))
++
++;; 1 se o pacote tem pelo menos 2 bytes e começa com o byte mágico 'P' (80).
++(fn well_formed
++  (params (n usize) (buf (slice u8 n net-rx)))
++  (returns usize)
++  (effects)
++  (stack-budget 64)
++  (pre)
++  (post (<= result 1))
++  (body
++    (if (< n 2) (then (return 0)))
++    (if (= (load buf 0) 80) (then (return 1)))
++    (return 0)))
++
++;; Valida, soma e contabiliza. Retorna 1 se aceitou.
++(fn inspect
++  (params (n usize) (pkt (slice u8 n net-rx)))
++  (returns usize)
++  (effects atomic)
++  (stack-budget 256)
++  (pre (<= n 4096))
++  (post (<= result 1))
++  (body
++    (let ok usize (call well_formed n pkt))
++    (if (= ok 1)
++      (then
++        (let sum usize (call checksum n pkt))
++        (atomic_store last_sum sum relaxed)
++        (do (atomic_fetch_add accepted 1 relaxed))
++        (return 1)))
++    (do (atomic_fetch_add dropped 1 relaxed))
++    (return 0)))
++
++;; O texto do veredito vem de rodata, nunca do pacote.
++(fn verdict
++  (params (ok usize))
++  (returns unit)
++  (effects syscall)
++  (stack-budget 128)
++  (pre (<= ok 1))
++  (post)
++  (body
++    (if (= ok 1)
++      (then
++        (let_slice a (data-ref msg_ok))
++        (do (sys_write 1 a (len a)))
++        (return)))
++    (let_slice d (data-ref msg_drop))
++    (do (sys_write 1 d (len d)))))
++
++(fn _start
++  (params)
++  (returns unit)
++  (effects syscall atomic)
++  (stack-budget 512)
++  (pre)
++  (post)
++  (body
++    (let_slice a (data-ref pkt_ok))
++    (let_slice b (data-ref pkt_bad))
++    (let_slice c (data-ref pkt_short))
++    (let ra usize (call inspect (len a) a))
++    (do (call verdict ra))
++    (let rb usize (call inspect (len b) b))
++    (do (call verdict rb))
++    (let rc usize (call inspect (len c) c))
++    (do (call verdict rc))
++    (sys_exit (cast i64 (+ (+ ra rb) rc)))))
+diff --git a/examples/selftest.prova b/examples/selftest.prova
+new file mode 100644
+index 0000000..ee806e6
+--- /dev/null
++++ b/examples/selftest.prova
+@@ -0,0 +1,175 @@
++;; selftest.prova: um programa de TESTE escrito em Prova, que testa a si mesmo.
++;;
++;;  - Estaticamente (prova.py check): todas as obrigações são provadas: sem overflow, sem acesso fora dos
++;;    limites, todo laço termina, contratos valem e nenhum dado da região `input` chega à saída.
++;;  - Dinamicamente (prova.py run): _start roda os casos e escreve PASS ou FAIL; o código de saída é 0 ou 1.
++;;
++;; Limites honestos: a Prova ainda não expressa "o vetor ficou ordenado" em contrato (conteúdo de fatias não é
++;; modelado). Para sort e reverse a prova estática cobre segurança de memória e terminação; a CORREÇÃO funcional
++;; é verificada por execução em tests/test_selftest.py (comparando com o Python).
++
++(region input)
++(deny-flow input @write)                      ; dado de entrada nunca vai para a saída
++
++(data sample "Hello, Prova!" input)
++(data pass_msg "PASS\n")
++(data fail_msg "FAIL\n")
++
++;; ---- máximo divisor comum por subtração: termina porque x+y decresce, nunca subtrai abaixo de zero ----
++(fn gcd
++  (params (a usize) (b usize))
++  (returns usize)
++  (effects)
++  (stack-budget 128)
++  (pre (<= 1 a) (<= 1 b))
++  (post (<= 1 result) (<= result a) (<= result b))
++  (body
++    (var x usize a)
++    (var y usize b)
++    (while (!= x y)
++      (invariant (<= 1 x) (<= 1 y) (<= x a) (<= y b))
++      (decreases (+ x y))
++      (if (> x y)
++        (then (set x (- x y)))
++        (else (set y (- y x)))))
++    (return x)))
++
++;; ---- soma dos bytes: provado que não estoura e que soma <= 255 * n ----
++(fn sum_bytes
++  (params (n usize) (buf (slice u8 n)))
++  (returns usize)
++  (effects)
++  (stack-budget 128)
++  (pre (<= n 1000))
++  (post (<= result (* 255 n)))
++  (body
++    (var i usize 0)
++    (var s usize 0)
++    (while (< i n)
++      (invariant (<= i n) (<= s (* 255 i)))
++      (decreases (- n i))
++      (set s (+ s (cast usize (load buf i))))
++      (set i (+ i 1)))
++    (return s)))
++
++;; ---- quantas vezes o byte v aparece ----
++(fn count_byte
++  (params (n usize) (buf (slice u8 n)) (v u8))
++  (returns usize)
++  (effects)
++  (stack-budget 128)
++  (pre)
++  (post (<= result n))
++  (body
++    (var i usize 0)
++    (var c usize 0)
++    (while (< i n)
++      (invariant (<= i n) (<= c i))
++      (decreases (- n i))
++      (if (= (load buf i) v) (then (set c (+ c 1))))
++      (set i (+ i 1)))
++    (return c)))
++
++;; ---- maior byte ----
++(fn max_byte
++  (params (n usize) (buf (slice u8 n)))
++  (returns u8)
++  (effects)
++  (stack-budget 128)
++  (pre (< 0 n))
++  (post (<= 0 result))
++  (body
++    (var i usize 0)
++    (var m u8 0)
++    (while (< i n)
++      (invariant (<= i n))
++      (decreases (- n i))
++      (let b u8 (load buf i))
++      (if (> b m) (then (set m b)))
++      (set i (+ i 1)))
++    (return m)))
++
++;; ---- ordenação por bolhas, no lugar: prova estática = memória segura + termina ----
++(fn sort
++  (params (n usize) (buf (slice u8 n)))
++  (returns unit)
++  (effects)
++  (stack-budget 128)
++  (pre (<= n 1000))
++  (post)
++  (body
++    (var pass usize 0)
++    (while (< pass n)
++      (invariant (<= pass n))
++      (decreases (- n pass))
++      (var j usize 0)
++      (while (< (+ j 1) (- n pass))
++        (invariant (<= j (- n pass)))
++        (decreases (- (- n pass) j))
++        (let x u8 (load buf j))
++        (let y u8 (load buf (+ j 1)))
++        (if (> x y)
++          (then (store buf j y)
++                (store buf (+ j 1) x)))
++        (set j (+ j 1)))
++      (set pass (+ pass 1)))))
++
++;; ---- inverte no lugar ----
++;; (pre (<= n 1000000)): sem esse limite o verificador acha um overflow real em (+ lo 1) quando n = 2^64-1.
++(fn reverse
++  (params (n usize) (buf (slice u8 n)))
++  (returns unit)
++  (effects)
++  (stack-budget 128)
++  (pre (<= n 1000000))
++  (post)
++  (body
++    (var lo usize 0)
++    (var hi usize n)
++    (while (< (+ lo 1) hi)
++      (invariant (<= lo hi) (<= hi n))
++      (decreases (- hi lo))
++      (let p u8 (load buf lo))
++      (let q u8 (load buf (- hi 1)))
++      (store buf lo q)
++      (store buf (- hi 1) p)
++      (set lo (+ lo 1))
++      (set hi (- hi 1)))))
++
++;; ---- 0 se o obtido é o esperado, 1 se não: soma as falhas sem ramificar _start ----
++(fn expect
++  (params (got usize) (want usize))
++  (returns usize)
++  (effects)
++  (stack-budget 64)
++  (pre)
++  (post (<= result 1))
++  (body
++    (if (= got want)
++      (then (return 0))
++      (else (return 1)))))
++
++(fn _start
++  (params)
++  (returns unit)
++  (effects syscall)
++  (stack-budget 512)
++  (pre)
++  (post)
++  (body
++    (let_slice s (data-ref sample))
++    (var failures usize 0)
++    (set failures (+ failures (call expect (call gcd 48 18) 6)))
++    (set failures (+ failures (call expect (call gcd 17 5) 1)))
++    (set failures (+ failures (call expect (call gcd 21 21) 21)))
++    (set failures (+ failures (call expect (call gcd 270 192) 6)))
++    (set failures (+ failures (call expect (call sum_bytes (len s) s) 1129)))
++    (set failures (+ failures (call expect (call count_byte (len s) s 111) 2)))
++    (set failures (+ failures (call expect (cast usize (call max_byte (len s) s)) 118)))
++    (if (= failures 0)
++      (then (let_slice ok (data-ref pass_msg))
++            (do (sys_write 1 ok (len ok)))
++            (sys_exit 0))
++      (else (let_slice bad (data-ref fail_msg))
++            (do (sys_write 1 bad (len bad)))
++            (sys_exit 1)))))
+diff --git a/prova.py b/prova.py
+index 71a3590..b6afbf3 100644
+--- a/prova.py
++++ b/prova.py
+@@ -77,6 +77,17 @@ def report(results):
+           f"{failed} falhas de obrigação, {posse} erros de posse/política")
+ 
+ 
++def _parse_args(raw):
++    from provac.interp import Slice
++    out = []
++    for r in raw:
++        try:
++            out.append(int(r, 0))
++        except ValueError:
++            out.append(Slice(r.encode("utf-8")))
++    return out
++
++
+ def _stack_table(P):
+     rows = ["função              quadro   pior caso   orçamento   cadeia de chamadas"]
+     for f in P.fns:
+@@ -92,7 +103,7 @@ def main():
+         except (AttributeError, ValueError):
+             pass
+     ap = argparse.ArgumentParser()
+-    ap.add_argument("cmd", choices=["check", "emit", "audit", "boot", "flow", "stack", "fix"])
++    ap.add_argument("cmd", choices=["check", "emit", "audit", "boot", "flow", "stack", "fix", "run"])
+     ap.add_argument("file", nargs="?")
+     ap.add_argument("--json", action="store_true")
+     ap.add_argument("--strict", action="store_true")
+@@ -104,7 +115,11 @@ def main():
+     ap.add_argument("--frames", default=None, help="stack/check: JSON {função: bytes} medido no backend")
+     ap.add_argument("--model-cmd", default=None, help="fix: comando que lê JSON no stdin e imprime o fonte corrigido")
+     ap.add_argument("--max-iter", type=int, default=5)
++    ap.add_argument("--entry-fn", default="_start", help="run: função de entrada")
++    ap.add_argument("--force", action="store_true", help="run: executa mesmo se a verificação falhar")
+     ap.add_argument("--out", default=None, help="fix: onde gravar o fonte final")
++    ap.add_argument("--arg", action="append", default=[], help="run: argumento da função de entrada (inteiro, ou texto para fatias); repetível")
++    ap.add_argument("--no-contracts", action="store_true", help="run: não conferir contratos/invariantes em execução")
+     a = ap.parse_args()
+     if a.cmd == "boot":
+         base = int(a.base, 0) if a.base else None
+@@ -136,6 +151,24 @@ def main():
+         print(json.dumps({"error": str(e)}, ensure_ascii=False) if a.json else f"erro: {e}",
+               file=sys.stdout if a.json else sys.stderr)
+         return 2
++    if a.cmd == "run":
++        from provac.interp import RunError, run
++        failed, _ = verdict(P.results, False)
++        if failed and not a.force:
++            report(P.results)
++            print("execução recusada: o programa não passou na verificação (use --force)", file=sys.stderr)
++            return 2
++        try:
++            res, _m = run(P, a.entry_fn, args=_parse_args(a.arg), check=not a.no_contracts)
++        except RunError as e:
++            print(f"violação em tempo de execução: {e}", file=sys.stderr)
++            return 3
++        sys.stdout.write(res.stdout.decode("utf-8", "replace"))
++        sys.stdout.write(res.stderr.decode("utf-8", "replace"))
++        if res.returned is not None:
++            print(f"resultado: {res.returned}")
++        print(f"[saída {res.exit_code}] (interpretador de referência; não é código nativo)", file=sys.stderr)
++        return int(res.exit_code or 0) & 0xFF
+     if a.cmd == "flow":
+         sys.stdout.write(flowmod.report(P.fns, P.summaries, P.meta["denies"], dot=a.dot) + "\n")
+         return 1 if any(r["fn"] == "(programa)" for r in P.results) else 0
+diff --git a/provac/check.py b/provac/check.py
+index 56567fb..c61aff0 100644
+--- a/provac/check.py
++++ b/provac/check.py
+@@ -110,6 +110,8 @@ class Cx:
+         self.meta = meta or {"regions": {"rodata"}, "data_region": {}, "statics": {}}
+         self.types, self.mut, self.slice_names = {}, set(), set()
+         self.slice_region = {}  # nome da fatia -> região declarada (None = sem região)
++        self.readonly = set()   # fatias vindas de (data ...): memória somente-leitura
++        self.decl = {}          # variável -> id do comando que a declarou
+         self.obs, self.k = [], 0
+         self.pre_contradictory = False
+ 
+@@ -358,12 +360,17 @@ def do_call(e, st, cx):
+     return r
+ 
+ 
+-def declare(cx, x, T, mut):
++def declare(cx, x, T, mut, node):
++    """Declara x. O MESMO comando executado em outro caminho (depois de um `if` que bifurcou estados) não é
++    redeclaração; outro comando com o mesmo nome é (sem sombreamento)."""
++    if x in cx.types and cx.decl.get(x) == id(node) and cx.types[x] == T:
++        return
+     if x in cx.types or x in cx.slice_names or x == "result":
+         raise ProvaError(f"redeclaração de '{x}' (sem sombreamento)")
+     if T not in SCALARS:
+         raise ProvaError(f"tipo inválido para variável: {show(T)}")
+     cx.types[x] = T
++    cx.decl[x] = id(node)
+     if mut:
+         cx.mut.add(x)
+ 
+@@ -397,7 +404,7 @@ def step(s, st, cx):
+     h = s[0]
+     if h in ("let", "var"):
+         _, x, T, e = s
+-        declare(cx, x, T, h == "var")
++        declare(cx, x, T, h == "var", s)
+         st.env[x] = assign_check(cx, st, e, T)
+         return [st]
+     if h == "set":
+@@ -412,11 +419,14 @@ def step(s, st, cx):
+             raise ProvaError(f"let_slice espera (data-ref nome) válido: {show(s)}")
+         cx.slice_names.add(b)
+         cx.slice_region[b] = cx.meta["data_region"].get(src[1], "rodata")
++        cx.readonly.add(b)
+         st.slices[b] = cx.data[src[1]]
+         return [st]
+     if h == "store":
+         _, b, i, v = s
+         L = slice_len(b, st, cx)
++        if b in cx.readonly:
++            raise ProvaError(f"escrita em fatia somente-leitura '{b}' (vem de data): {show(s)}")
+         if ty(i, cx) not in (None, "usize"):
+             raise ProvaError(f"índice de fatia deve ser usize: {show(s)}; use (cast usize ...)")
+         it = ev(i, st, cx)
+diff --git a/provac/effects.py b/provac/effects.py
+index 99cc83d..20cfa98 100644
+--- a/provac/effects.py
++++ b/provac/effects.py
+@@ -1,6 +1,6 @@
+ """Efeitos nas assinaturas: quem faz syscall ou usa atômicos TEM que declarar. Sem (effects ...) = função pura.
+ Um efeito de um chamado propaga para o chamador (não existe efeito escondido atrás de uma chamada)."""
+-from .check import ATOMIC_OPS
++from .check import ATOMIC_OPS, is_slice
+ 
+ 
+ def direct(fn):
+@@ -33,3 +33,49 @@ def check_effects(fn, sigs):
+             src.setdefault(e, set()).add(f"a chamada a {c}")
+     return [f"{fn.name}: efeito '{e}' não declarado (vem de {', '.join(sorted(src[e]))}); "
+             f"declare (effects {e}) no contrato" for e in sorted(src) if e not in fn.effects]
++
++
++def mutated_params(fn, sigs, memo=None):
++    """Parâmetros-fatia em que a função escreve (direto ou passando a um chamado que escreve)."""
++    memo = {} if memo is None else memo
++    if fn.name in memo:
++        return memo[fn.name]
++    memo[fn.name] = set()  # o grafo de chamadas é acíclico (verificado antes)
++    names = {n for n, T in fn.params if is_slice(T)}
++    out = set()
++
++    def walk(n):
++        if isinstance(n, list) and n:
++            if n[0] == "store" and len(n) > 1 and n[1] in names:
++                out.add(n[1])
++            elif n[0] == "call" and len(n) > 1 and n[1] in sigs:
++                g = sigs[n[1]]
++                gm = mutated_params(g, sigs, memo)
++                for (pn, _), a in zip(g.params, n[2:]):
++                    if pn in gm and isinstance(a, str) and a in names:
++                        out.add(a)
++            for x in n:
++                walk(x)
++
++    walk(fn.body)
++    memo[fn.name] = out
++    return out
++
++
++def check_readonly_calls(fn, cx, sigs, memo):
++    """Fatia somente-leitura (de data) não pode ir a um parâmetro em que o chamado escreve."""
++    errs = []
++
++    def walk(n):
++        if isinstance(n, list) and n:
++            if n[0] == "call" and len(n) > 1 and n[1] in sigs:
++                g = sigs[n[1]]
++                gm = mutated_params(g, sigs, memo)
++                for (pn, _), a in zip(g.params, n[2:]):
++                    if pn in gm and isinstance(a, str) and a in cx.readonly:
++                        errs.append(f"{fn.name}: '{a}' é somente-leitura (vem de data), mas {g.name} escreve em '{pn}'")
++            for x in n:
++                walk(x)
++
++    walk(fn.body)
++    return errs
+diff --git a/provac/interp.py b/provac/interp.py
+new file mode 100644
+index 0000000..aea1281
+--- /dev/null
++++ b/provac/interp.py
+@@ -0,0 +1,307 @@
++"""Interpretador de referência da Prova.
++
++NÃO é um backend: não gera código nativo. Serve para (1) EXECUTAR programas Prova onde não há LLVM e
++(2) validar o verificador: confere em tempo de execução tudo que ele prometeu (pre, post, invariantes,
++variante decrescente, limites, overflow, ordem das syscalls). Se um programa verificado violar algo aqui,
++o bug é do verificador (ou do interpretador): é um teste diferencial."""
++import random
++
++from .check import ARITH, CMP, HI, LO, ProvaError, is_slice, show, slice_parts, ty
++
++FUEL = 5_000_000
++
++
++class RunError(Exception):
++    """Violação em tempo de execução (overflow, fora dos limites, contrato, invariante...)."""
++
++
++class Inconclusive(RunError):
++    """A execução gastou todo o combustível (passos/iterações). NÃO é violação: é só lenta demais para o teste."""
++
++
++class Exit(Exception):
++    def __init__(self, code):
++        self.code = code
++
++
++class Ret(Exception):
++    def __init__(self, value):
++        self.value = value
++
++
++class Slice:
++    def __init__(self, data):
++        self.data = bytearray(data)
++
++
++class Frame:
++    def __init__(self, fn, cx):
++        self.fn, self.cx, self.env, self.slices = fn, cx, {}, {}
++
++
++class Result:
++    def __init__(self, exit_code, out, err, statics, returned):
++        self.exit_code, self.stdout, self.stderr, self.statics, self.returned = exit_code, out, err, statics, returned
++
++
++class Machine:
++    def __init__(self, P, check=True, fuel=FUEL):
++        self.P, self.check, self.fuel = P, check, fuel
++        self.cx = {fn.name: cx for fn, cx in P.compiled}
++        self.out, self.err = bytearray(), bytearray()
++        self.statics = dict(P.meta["static_init"])
++        self.steps = 0
++
++    # ---------- contratos (inteiros matemáticos, sem faixa) ----------
++    def gh(self, e, F, result=None):
++        if isinstance(e, int):
++            return e
++        if isinstance(e, str):
++            if e == "result":
++                return result
++            return F.env[e]
++        op = e[0]
++        if op in ARITH:
++            a, b = self.gh(e[1], F, result), self.gh(e[2], F, result)
++            return a + b if op == "+" else a - b if op == "-" else a * b
++        if op in CMP:
++            a, b = self.gh(e[1], F, result), self.gh(e[2], F, result)
++            return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b, "=": a == b, "!=": a != b}[op]
++        if op == "and":
++            return all(self.gh(x, F, result) for x in e[1:])
++        if op == "or":
++            return any(self.gh(x, F, result) for x in e[1:])
++        if op == "not":
++            return not self.gh(e[1], F, result)
++        if op == "len":
++            return len(F.slices[e[1]].data)
++        raise RunError(f"forma não avaliável em contrato: {show(e)}")
++
++    def need(self, cond, what):
++        if self.check and not cond:
++            raise RunError(what)
++
++    # ---------- expressões ----------
++    def fit(self, v, T, what):
++        if not LO[T] <= v <= HI[T]:
++            raise RunError(f"{what}: {v} fora da faixa de {T}")
++        return v
++
++    def ex(self, e, F, want=None):
++        if isinstance(e, int):
++            return e
++        if isinstance(e, str):
++            return F.env[e]
++        op = e[0]
++        if op in ARITH:
++            T = ty(e, F.cx) or want or "i64"
++            a, b = self.ex(e[1], F, T), self.ex(e[2], F, T)
++            v = a + b if op == "+" else a - b if op == "-" else a * b
++            return self.fit(v, T, f"overflow em {show(e)}")
++        if op in CMP:
++            a, b = self.ex(e[1], F), self.ex(e[2], F)
++            return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b, "=": a == b, "!=": a != b}[op]
++        if op == "and":
++            return all(self.ex(x, F) for x in e[1:])
++        if op == "or":
++            return any(self.ex(x, F) for x in e[1:])
++        if op == "not":
++            return not self.ex(e[1], F)
++        if op == "len":
++            return len(F.slices[e[1]].data)
++        if op == "load":
++            s, i = F.slices[e[1]], self.ex(e[2], F, "usize")
++            if not 0 <= i < len(s.data):
++                raise RunError(f"leitura fora dos limites: {show(e)} com índice {i} e tamanho {len(s.data)}")
++            return s.data[i]
++        if op == "cast":
++            return self.fit(self.ex(e[2], F), e[1], f"cast {show(e)}")
++        if op == "sys_write":
++            fd, s, n = self.ex(e[1], F, "i64"), F.slices[e[2]], self.ex(e[3], F, "usize")
++            if not 0 <= n <= len(s.data):
++                raise RunError(f"sys_write de {n} bytes excede o buffer de {len(s.data)}")
++            if fd == 1:
++                self.out += s.data[:n]
++            elif fd == 2:
++                self.err += s.data[:n]
++            else:
++                return -9  # EBADF
++            return n
++        if op == "call":
++            g = self.P.sigs[e[1]]
++            args = [F.slices[a] if is_slice(PT) else self.ex(a, F, PT) for (_, PT), a in zip(g.params, e[2:])]
++            return self.call(g.name, args)
++        if op in ("atomic_load", "atomic_store", "atomic_fetch_add", "atomic_cas"):
++            return self.atomic(e, F)
++        raise RunError(f"forma desconhecida: {show(e)}")
++
++    def atomic(self, e, F):
++        name = e[1]
++        T = self.P.meta["statics"][name]
++        wrap = (lambda v: v % 2**64) if T == "usize" else (lambda v: (v + 2**63) % 2**64 - 2**63)
++        old = self.statics[name]
++        if e[0] == "atomic_load":
++            return old
++        if e[0] == "atomic_store":
++            self.statics[name] = self.fit(self.ex(e[2], F, T), T, f"atomic_store em {name}")
++            return None
++        if e[0] == "atomic_fetch_add":
++            self.statics[name] = wrap(old + self.ex(e[2], F, T))
++            return old
++        exp, new = self.ex(e[2], F, T), self.ex(e[3], F, T)
++        if old == exp:
++            self.statics[name] = new
++        return old
++
++    # ---------- instruções ----------
++    def block(self, stmts, F):
++        for s in stmts:
++            self.stmt(s, F)
++
++    def stmt(self, s, F):
++        self.steps += 1
++        if self.steps > self.fuel * 4:
++            raise Inconclusive("limite de passos excedido")
++        h = s[0]
++        if h in ("let", "var"):
++            F.env[s[1]] = self.fit(self.ex(s[3], F, s[2]), s[2], f"{h} {s[1]}")
++        elif h == "set":
++            F.env[s[1]] = self.fit(self.ex(s[2], F, F.cx.types[s[1]]), F.cx.types[s[1]], f"set {s[1]}")
++        elif h == "let_slice":
++            F.slices[s[1]] = Slice(self.P.data[s[2][1]])
++        elif h == "store":
++            sl, i = F.slices[s[1]], self.ex(s[2], F, "usize")
++            if not 0 <= i < len(sl.data):
++                raise RunError(f"escrita fora dos limites: {show(s)} com índice {i} e tamanho {len(sl.data)}")
++            sl.data[i] = self.fit(self.ex(s[3], F, "u8"), "u8", f"store {show(s)}")
++        elif h in ("do", "atomic_store"):
++            self.ex(s[1] if h == "do" else s, F)
++        elif h == "assert":
++            self.need(self.gh(s[1], F), f"assert falhou: {show(s[1])}")
++        elif h == "drop":
++            pass
++        elif h == "return":
++            raise Ret(self.ex(s[1], F, F.fn.ret) if len(s) > 1 else None)
++        elif h == "sys_exit":
++            raise Exit(self.ex(s[1], F, "i64"))
++        elif h == "if":
++            branch = "then" if self.ex(s[1], F) else "else"
++            for part in s[2:]:
++                if part[0] == branch:
++                    self.block(part[1:], F)
++        elif h == "while":
++            self.loop(s, F)
++        else:
++            raise RunError(f"instrução desconhecida: {show(s)}")
++
++    def loop(self, s, F):
++        inv = [x for f in s[2:] if f[0] == "invariant" for x in f[1:]]
++        dec = next(f[1] for f in s[2:] if f[0] == "decreases")
++        body = [f for f in s[2:] if f[0] not in ("invariant", "decreases")]
++        prev = None
++        for _ in range(self.fuel):
++            for I in inv:
++                self.need(self.gh(I, F), f"invariante violada: {show(I)}")
++            if not self.ex(s[1], F):
++                return
++            d = self.gh(dec, F)
++            self.need(d >= 0, f"variante negativa: {show(dec)} = {d}")
++            self.need(prev is None or d < prev, f"variante não decresceu: {show(dec)} foi {prev} e agora é {d}")
++            prev = d
++            self.block(body, F)
++        raise Inconclusive("laço excedeu o limite de iterações")
++
++    # ---------- chamadas ----------
++    def call(self, name, args):
++        fn = self.P.sigs[name]
++        F = Frame(fn, self.cx[name])
++        for (pn, PT), a in zip(fn.params, args):
++            if is_slice(PT):
++                F.slices[pn] = a
++            else:
++                F.env[pn] = self.fit(a, PT, f"argumento {pn} de {name}")
++        for p in fn.pre:
++            self.need(self.gh(p, F), f"pré-condição de {name} violada: {show(p)}")
++        ret = None
++        try:
++            self.block(fn.body, F)
++        except Ret as r:
++            ret = r.value
++        for q in fn.post:
++            self.need(self.gh(q, F, ret), f"pós-condição de {name} violada: {show(q)} (result = {ret})")
++        return ret
++
++
++def run(P, entry="_start", args=(), check=True):
++    """Executa `entry`. Retorna Result; levanta RunError se o programa violar algo."""
++    if entry not in P.sigs:
++        raise ProvaError(f"função de entrada '{entry}' não existe")
++    m = Machine(P, check)
++    code = ret = None
++    try:
++        ret = m.call(entry, list(args))
++        code = 0
++    except Exit as e:
++        code = e.code
++    return Result(code, bytes(m.out), bytes(m.err), dict(m.statics), ret), m
++
++
++# ---------- teste diferencial: entradas aleatórias que satisfazem a pre ----------
++SCALAR_POOL = [0, 1, 2, 3, 5, 8, 10, 50, 100, 255, 256, 999, 1000, 4096, 4097, 65535]
++SMALL_POOL = [0, 1, 2, 3, 5, 8, 10, 21, 48, 50, 100]   # a maioria das entradas é pequena: laços terminam rápido
++FUZZ_FUEL = 5_000                                      # combustível curto: execução longa = inconclusivo, não falha
++
++
++def gen_args(fn, rnd):
++    lens = {slice_parts(T)[0] for _, T in fn.params if is_slice(T)}
++    args, vals = [], {}
++    for pn, T in fn.params:
++        if is_slice(T):
++            n = vals[slice_parts(T)[0]]
++            args.append(Slice(bytes(rnd.randrange(256) for _ in range(n))))
++        else:
++            if pn in lens:
++                v = rnd.choice([0, 1, 2, 3, 4, 7, 16, 33, 100])
++            elif rnd.random() < 0.6:
++                v = max(LO[T], min(HI[T], rnd.choice(SMALL_POOL)))
++            else:
++                pool = SCALAR_POOL + [rnd.randrange(LO[T] if T != "i64" else -2**63, HI[T] + 1) % (HI[T] + 1)
++                                       if T != "i64" else rnd.randrange(-2**63, 2**63)]
++                if T == "i64":
++                    pool += [-1, -2, 2**63 - 1, -2**63]
++                v = rnd.choice(pool)
++                if not LO[T] <= v <= HI[T]:
++                    v = max(LO[T], min(HI[T], v))
++            vals[pn] = v
++            args.append(v)
++    return args
++
++
++def fuzz_function(P, name, runs=400, seed=1):
++    """Chama `name` com entradas aleatórias; só conta as que satisfazem a pre e terminam dentro do combustível
++    (execução longa demais é inconclusiva, não violação). Retorna (executadas, violações)."""
++    fn, rnd = P.sigs[name], random.Random(seed)
++    executed, violations = 0, []
++    for _ in range(runs):
++        args = gen_args(fn, rnd)
++        m = Machine(P, check=True, fuel=FUZZ_FUEL)
++        F = Frame(fn, m.cx[name])
++        for (pn, PT), a in zip(fn.params, args):
++            (F.slices if is_slice(PT) else F.env)[pn] = a
++        try:
++            if not all(m.gh(p, F) for p in fn.pre):
++                continue
++        except (RunError, KeyError):
++            continue
++        try:
++            m.call(name, args)
++            executed += 1
++        except Exit:
++            executed += 1
++        except Inconclusive:
++            continue
++        except RunError as e:
++            executed += 1
++            violations.append((args if not any(isinstance(a, Slice) for a in args)
++                               else [a if not isinstance(a, Slice) else bytes(a.data) for a in args], str(e)))
++    return executed, violations
+diff --git a/provac/program.py b/provac/program.py
+index c7a7e7e..cf5d321 100644
+--- a/provac/program.py
++++ b/provac/program.py
+@@ -3,7 +3,7 @@
+ import re
+ 
+ from .check import ATOMIC_T, HI, LO, Fn, ProvaError, check_call_graph, verify_fn
+-from .effects import check_effects
++from .effects import check_effects, check_readonly_calls
+ from .flow import SINK, analyse_program, check_denies
+ from .linear import check_linear
+ from .sexp import parse
+@@ -74,14 +74,14 @@ def build(text, frames=None, discharger=discharge):
+     check_call_graph(fns)
+     P = Program()
+     P.data, P.fns, P.sigs, P.meta = data, fns, sigs, meta
+-    P.compiled, P.results, cxs = [], [], {}
++    P.compiled, P.results, cxs, ro_memo = [], [], {}, {}
+     for fn in fns:
+         lin = check_linear(fn, sigs)
+         cx = verify_fn(fn, dlen, sigs, meta)
+         cxs[fn.name] = cx
+         P.compiled.append((fn, cx))
+         obs = [{"label": ob["label"], "goal": str(ob["goal"]), **discharger(ob)} for ob in cx.obs]
+-        pol = check_effects(fn, sigs)
++        pol = check_effects(fn, sigs) + check_readonly_calls(fn, cx, sigs, ro_memo)
+         if cx.pre_contradictory:
+             pol.append(f"{fn.name}: pré-condição contraditória (insatisfatível): qualquer corpo seria 'provado' "
+                        f"no vazio; revise o (pre ...)")
+diff --git a/tests/test_checker.py b/tests/test_checker.py
+index e8f07bb..46b07ee 100644
+--- a/tests/test_checker.py
++++ b/tests/test_checker.py
+@@ -11,7 +11,7 @@ from provac.sexp import ParseError  # noqa: E402
+ EX = os.path.join(ROOT, "examples")
+ GOOD = ["sum_to", "copy_bytes", "hello", "ok_own", "calls",
+         "x86_64_start", "aarch64_start", "riscv64_start", "kmain_min",
+-        "effects", "regions_flow", "stack_budget", "atomic_counter", "driver_demo"]
++        "effects", "regions_flow", "stack_budget", "atomic_counter", "driver_demo", "packet_inspector", "selftest"]
+ 
+ 
+ def results(name):
+@@ -38,7 +38,7 @@ def src_error(src):
+         _, _, res = prova.analyse(f.name)
+     except (ProvaError, ParseError) as e:
+         return str(e)
+-    bad = failed(res) or linear(res)
++    bad = failed(res) or linear(res) or policy(res)
+     return "\n".join(map(str, bad)) if bad else None
+ 
+ 
+@@ -100,12 +100,37 @@ def test_soundness_regressions():
+ def test_robustness_errors_are_structured():
+     # antes: KeyError/IndexError/TypeError vazavam como traceback
+     assert "não está definida em todos os caminhos" in src_error(
+-        '(data m "abc")\n(fn f (params (c i64)) (returns unit) (pre) (post) (body (if (< c 0) (then (let_slice b (data-ref m)))) (store b 0 1)))')
++        '(data m "abc")\n(fn f (params (c i64)) (returns unit) (pre) (post) (body (if (< c 0) (then (let_slice b (data-ref m)))) (let x u8 (load b 0))))')
+     assert "malformada" in src_error("(fn f (params (x)) (returns unit) (pre) (post) (body))")
+     assert "tipo inválido" in src_error("(fn f (params) (returns unit) (pre) (post) (body (let x i8 0)))")  # i8 não existe
+     assert "forma de topo inválida" in src_error("foo")
+ 
+ 
++def test_let_after_a_branching_if_is_not_a_redeclaration():
++    # regressão: o mesmo `let` rodava uma vez por caminho e acusava "redeclaração" falsa
++    ok = "(fn f (params (c i64)) (returns i64) (pre) (post) (body (var r i64 0) (if (< c 0) (then (set r 1))) (let y i64 5) (return (+ r y))))"
++    assert src_error(ok) is None
++    # sombreamento de verdade continua proibido, também em ramos diferentes
++    assert "redeclaração" in src_error("(fn f (params (c i64)) (returns unit) (pre) (post) (body (let y i64 1) (let y i64 2)))")
++    assert "redeclaração" in src_error("(fn f (params (c i64)) (returns unit) (pre) (post) (body (if (< c 0) (then (let y i64 1)) (else (let y i64 2)))))")
++
++
++def test_cannot_write_to_read_only_data():
++    # regressão: a fatia vinda de (data ...) vira `memref.global constant`; escrever nela era aceito
++    d = '(data m "abc")\n'
++    assert "somente-leitura" in src_error(d + "(fn f (params) (returns unit) (pre) (post) (body (let_slice b (data-ref m)) (store b 0 120)))")
++    writer = "(fn zero (params (n usize) (b (slice u8 n))) (returns unit) (pre (< 0 n)) (post) (body (store b 0 0)))\n"
++    e = src_error(d + writer + "(fn g (params) (returns unit) (pre) (post) (body (let_slice b (data-ref m)) (do (call zero (len b) b))))")
++    assert "somente-leitura" in e and "escreve em 'b'" in e
++    # transitivo: g repassa a h, que escreve
++    mid = "(fn mid (params (n usize) (b (slice u8 n))) (returns unit) (pre (< 0 n)) (post) (body (do (call zero n b))))\n"
++    e = src_error(d + writer + mid + "(fn g (params) (returns unit) (pre) (post) (body (let_slice b (data-ref m)) (do (call mid (len b) b))))")
++    assert "somente-leitura" in e and "mid escreve" in e
++    # ler continua permitido, inclusive passando a quem só lê
++    reader = "(fn rd (params (n usize) (b (slice u8 n))) (returns u8) (pre (< 0 n)) (post) (body (return (load b 0))))\n"
++    assert src_error(d + reader + "(fn g (params) (returns u8) (pre) (post) (body (let_slice b (data-ref m)) (return (call rd (len b) b))))") is None
++
++
+ def test_report_summary_is_never_negative():
+     out = subprocess.run([sys.executable, os.path.join(ROOT, "prova.py"), "check", os.path.join(EX, "bad_leak.prova")],
+                          capture_output=True, text=True, encoding="utf-8").stdout
+diff --git a/tests/test_emit.py b/tests/test_emit.py
+index 16bc8a9..23af5bd 100644
+--- a/tests/test_emit.py
++++ b/tests/test_emit.py
+@@ -10,7 +10,7 @@ from provac.mlir import emit_module  # noqa: E402
+ EX = os.path.join(ROOT, "examples")
+ GOOD = ["sum_to", "copy_bytes", "hello", "ok_own", "calls",
+         "x86_64_start", "aarch64_start", "riscv64_start", "kmain_min",
+-        "effects", "regions_flow", "stack_budget", "atomic_counter", "driver_demo"]
++        "effects", "regions_flow", "stack_budget", "atomic_counter", "driver_demo", "packet_inspector", "selftest"]
+ TARGETS = ("x86_64", "aarch64", "riscv64")
+ WRITE_NR = {"x86_64": 1, "aarch64": 64, "riscv64": 64}
+ EXIT_NR = {"x86_64": 60, "aarch64": 93, "riscv64": 93}
+diff --git a/tests/test_packet_inspector.py b/tests/test_packet_inspector.py
+new file mode 100644
+index 0000000..b69cf0c
+--- /dev/null
++++ b/tests/test_packet_inspector.py
+@@ -0,0 +1,55 @@
++"""O programa de teste (examples/packet_inspector.prova) e erros realistas nele: cada bug plausível é recusado
++pelo verificador pelo motivo certo, e o mesmo bug falha também em tempo de execução."""
++from _util import build, example, pending, problems
++from provac.interp import RunError, run
++
++BASE = example("packet_inspector")
++
++
++def mutated(old, new):
++    assert old in BASE, old
++    return BASE.replace(old, new, 1)
++
++
++def test_the_unmodified_program_is_fully_proved_and_clean():
++    P = build(BASE)
++    assert not problems(P) and not pending(P)
++    assert len([o for r in P.results for o in r["obligations"]]) >= 55
++
++
++def test_off_by_one_in_the_loop_is_caught_statically_and_at_runtime():
++    src = mutated("(while (< i n)\n      (invariant (<= i n) (<= s (* 255 i)))", "(while (<= i n)\n      (invariant (<= i n) (<= s (* 255 i)))")
++    assert any("limites" in p for p in problems(build(src)))
++    try:
++        run(build(src))
++    except RunError as e:
++        assert "fora dos limites" in str(e)
++    else:
++        raise AssertionError("o mesmo bug deveria falhar na execução")
++
++
++def test_missing_length_check_is_caught():
++    src = mutated("    (if (< n 2) (then (return 0)))\n", "")
++    assert any("limites" in p and "load buf 0" in p for p in problems(build(src)))   # n pode ser 0
++
++
++def test_leaking_packet_data_to_output_violates_the_policy():
++    src = mutated("(effects atomic)\n  (stack-budget 256)\n  (pre (<= n 4096))\n  (post (<= result 1))\n  (body\n    (let ok usize",
++                  "(effects atomic syscall)\n  (stack-budget 256)\n  (pre (<= n 4096))\n  (post (<= result 1))\n  (body\n    (do (sys_write 1 pkt n))\n    (let ok usize")
++    ps = problems(build(src))
++    assert any("fluxo proibido net-rx → @write" in p for p in ps), ps
++
++
++def test_forgotten_effect_declaration_is_caught():
++    src = mutated("(effects atomic)\n  (stack-budget 256)", "(effects)\n  (stack-budget 256)")
++    assert any("efeito 'atomic' não declarado" in p for p in problems(build(src)))
++
++
++def test_stack_budget_too_small_is_caught():
++    src = mutated("(stack-budget 256)", "(stack-budget 100)")
++    assert any(p.startswith("pilha: inspect") for p in problems(build(src)))
++
++
++def test_wrong_checksum_breaks_the_loop_invariant():
++    src = mutated("(set s (+ s (cast usize (load buf i))))", "(set s (+ s (* 2 (cast usize (load buf i)))))")
++    assert any("invariante preservada" in p for p in problems(build(src)))
+diff --git a/tests/test_run.py b/tests/test_run.py
+new file mode 100644
+index 0000000..d1a176d
+--- /dev/null
++++ b/tests/test_run.py
+@@ -0,0 +1,143 @@
++"""Interpretador de referência: executa programas Prova e confere em tempo de execução o que o verificador
++prometeu. Teste diferencial: programas verificados não podem violar nada; programas recusados são pegos."""
++import os, subprocess, sys
++from _util import ROOT, build, example
++from provac.interp import RunError, fuzz_function, run
++
++VERIFIED = ["sum_to", "copy_bytes", "calls", "effects", "regions_flow", "stack_budget", "atomic_counter",
++            "packet_inspector", "driver_demo", "ok_own", "selftest"]
++
++
++def prog(body, statics="", params="", ret="unit", pre="", post=""):
++    return f"{statics}\n(fn f (params {params}) (returns {ret}) (effects syscall atomic) (pre {pre}) (post {post}) (body {body}))"
++
++
++def test_packet_inspector_runs_with_the_expected_result():
++    res, _ = run(build(example("packet_inspector")))
++    assert res.stdout == b"ACCEPT\nDROP\nDROP\n"
++    assert res.exit_code == 1                       # um pacote aceito
++    assert res.statics == {"accepted": 1, "dropped": 2, "last_sum": sum(b"PING hello")}
++
++
++def test_cli_run_prints_output_and_returns_the_program_exit_code():
++    r = subprocess.run([sys.executable, os.path.join(ROOT, "prova.py"), "run",
++                        os.path.join(ROOT, "examples", "packet_inspector.prova")],
++                       capture_output=True, text=True, encoding="utf-8")
++    assert r.stdout == "ACCEPT\nDROP\nDROP\n" and r.returncode == 1
++    assert "interpretador de referência" in r.stderr
++
++
++def test_run_refuses_unverified_programs_unless_forced():
++    path = os.path.join(ROOT, "examples", "bad_inc.prova")
++    cli = lambda *a: subprocess.run([sys.executable, os.path.join(ROOT, "prova.py"), "run", path, "--entry-fn", "inc", *a],
++                                    capture_output=True, text=True, encoding="utf-8")
++    assert cli().returncode == 2 and "não passou na verificação" in cli().stderr
++
++
++def test_runtime_reproduces_the_verifier_counterexamples():
++    inc = build(example("bad_inc"))       # o verificador diz: x = 2**63-1 estoura
++    try:
++        run(inc, "inc", [2**63 - 1])
++    except RunError as e:
++        assert "overflow" in str(e)
++    else:
++        raise AssertionError("o contraexemplo do verificador não reproduziu em tempo de execução")
++    from provac.interp import Slice
++    fill = build(example("bad_bounds"))   # o verificador diz: len = n escreve fora do buffer
++    try:
++        run(fill, "fill", [3, Slice(b"abc"), 3])
++    except RunError as e:
++        assert "fora dos limites" in str(e)
++    else:
++        raise AssertionError("escrita fora dos limites não foi detectada")
++
++
++def test_differential_fuzz_verified_programs_never_violate_anything():
++    total = 0
++    for name in VERIFIED:
++        P = build(example(name))
++        for fn in P.fns:
++            if fn.name == "_start":
++                continue
++            executed, violations = fuzz_function(P, fn.name, runs=120, seed=11)
++            assert executed > 0, f"{name}.{fn.name}: nenhuma entrada satisfez a pre (teste sem poder)"
++            assert not violations, f"{name}.{fn.name}: o verificador aceitou, mas em execução: {violations[:2]}"
++            total += executed
++    assert total > 1000
++
++
++def test_fuzz_finds_the_bugs_in_programs_the_verifier_rejects():
++    for name, fn in (("bad_inc", "inc"), ("bad_bounds", "fill")):
++        executed, violations = fuzz_function(build(example(name)), fn, runs=600, seed=3)
++        assert violations, f"{name}: o fuzzing não achou o bug que o verificador apontou"
++
++
++def test_runtime_checks_contracts_invariants_and_variants():
++    wrong_post = build("(fn f (params (x usize)) (returns usize) (pre (<= x 5)) (post (= result (+ x 1))) (body (return x)))")
++    try:
++        run(wrong_post, "f", [2])
++    except RunError as e:
++        assert "pós-condição de f violada" in str(e)
++    else:
++        raise AssertionError
++    bad_inv = build("(fn f (params) (returns unit) (pre) (post) (body (var i usize 0) "
++                    "(while (< i 5) (invariant (< i 3)) (decreases (- 5 i)) (set i (+ i 1)))))")
++    try:
++        run(bad_inv, "f")
++    except RunError as e:
++        assert "invariante violada" in str(e)
++    else:
++        raise AssertionError
++    bad_var = build("(fn f (params) (returns unit) (pre) (post) (body (var i usize 0) "
++                    "(while (< i 5) (invariant) (decreases 9) (set i (+ i 1)))))")
++    try:
++        run(bad_var, "f")
++    except RunError as e:
++        assert "variante não decresceu" in str(e)
++    else:
++        raise AssertionError
++    pre = build("(fn f (params (x usize)) (returns unit) (pre (<= x 5)) (post) (body))")
++    try:
++        run(pre, "f", [9])
++    except RunError as e:
++        assert "pré-condição de f violada" in str(e)
++    else:
++        raise AssertionError
++
++
++def test_atomic_semantics_at_runtime():
++    cas = build(prog("(return (atomic_cas c 5 9 seq_cst seq_cst))", "(static c (atomic usize) 5)", ret="usize"))
++    r, _ = run(cas, "f")
++    assert r.returned == 5 and r.statics["c"] == 9                  # casou: troca e devolve o antigo
++    cas2 = build(prog("(return (atomic_cas c 5 9 seq_cst seq_cst))", "(static c (atomic usize) 7)", ret="usize"))
++    r, _ = run(cas2, "f")
++    assert r.returned == 7 and r.statics["c"] == 7                  # não casou: não troca
++    wrap = build(prog("(return (atomic_fetch_add c 1 relaxed))", "(static c (atomic usize) 18446744073709551615)", ret="usize"))
++    r, _ = run(wrap, "f")
++    assert r.returned == 2**64 - 1 and r.statics["c"] == 0          # dá a volta (wrap) por definição
++
++
++def test_syscall_semantics_at_runtime():
++    P = build('(data m "hi")\n' + "(fn f (params) (returns i64) (effects syscall) (pre) (post) "
++              "(body (let_slice b (data-ref m)) (do (sys_write 2 b (len b))) (return (sys_write 7 b (len b)))))")
++    r, _ = run(P, "f")
++    assert r.stderr == b"hi" and r.stdout == b"" and r.returned == -9   # fd 2 -> stderr; fd inválido -> EBADF
++
++
++def test_out_of_fuel_is_inconclusive_not_a_violation():
++    # regressão: o limite era contado como VIOLAÇÃO (falso positivo) e o fuzzing de gcd com entradas grandes travava.
++    # Dois caminhos de combustível: limite de ITERAÇÕES do laço (gcd: poucas instruções por volta) e limite de
++    # PASSOS (sort: muitas instruções por volta). Os dois precisam ser inconclusivos.
++    from provac.interp import Inconclusive, Machine, RunError, Slice
++    P = build(example("selftest"))
++    data = bytes((i * 7) % 256 for i in range(300))
++    for name, args in (("gcd", [1000, 1]), ("sort", [len(data), Slice(data)])):
++        try:
++            Machine(P, check=True, fuel=50).call(name, args)
++        except Inconclusive:
++            pass
++        else:
++            raise AssertionError(f"{name} deveria esgotar o combustível")
++    assert issubclass(Inconclusive, RunError)
++    executed, violations = fuzz_function(P, "gcd", runs=120, seed=3)
++    assert executed > 0 and not violations, violations[:2]
+diff --git a/tests/test_selftest.py b/tests/test_selftest.py
+new file mode 100644
+index 0000000..d38b255
+--- /dev/null
++++ b/tests/test_selftest.py
+@@ -0,0 +1,119 @@
++"""examples/selftest.prova: programa de TESTE escrito em Prova.
++Estaticamente: tudo provado (segurança de memória, ausência de overflow, terminação, contratos, política de fluxo).
++Dinamicamente: roda os casos e imprime PASS/FAIL. A CORREÇÃO FUNCIONAL de sort/reverse/gcd/... (que contratos ainda não
++expressam, pois o conteúdo de fatias não é modelado) é conferida aqui, executando contra o Python."""
++import math, random
++from _util import build, example, pending, problems
++from provac.interp import Slice, fuzz_function, run
++from provac.mlir import emit_module
++
++P = build(example("selftest"))
++
++
++def mutate(src, fn, old, new):
++    """Troca `old` por `new` SÓ dentro de (fn <fn> ...). Se o padrão não existir ali, o teste falha dizendo qual
++    (um replace global pegaria a primeira ocorrência de outra função: o teste ficaria acoplado à ordem do arquivo)."""
++    head, sep, rest = src.partition(f"(fn {fn}\n")
++    assert sep, f"função {fn} não encontrada em selftest.prova"
++    body, nxt, tail = rest.partition("\n(fn ")
++    assert old in body, f"padrão {old!r} não encontrado em (fn {fn}): atualize o teste junto com o exemplo"
++    return head + sep + body.replace(old, new, 1) + nxt + tail
++
++
++def call(prog, name, *args):
++    res, _ = run(prog, name, list(args))
++    return res.returned
++
++
++def sorted_by_prova(prog, data):
++    s = Slice(data)
++    run(prog, "sort", [len(data), s])
++    return bytes(s.data)
++
++
++def reversed_by_prova(prog, data):
++    s = Slice(data)
++    run(prog, "reverse", [len(data), s])
++    return bytes(s.data)
++
++
++def inputs(seed, count=300, max_len=40):
++    rnd = random.Random(seed)
++    yield b""
++    yield b"\x00"
++    yield bytes(range(255, 245, -1))          # decrescente
++    yield bytes([7] * 9)                      # todos iguais
++    for _ in range(count):
++        yield bytes(rnd.randrange(256) for _ in range(rnd.randrange(max_len + 1)))
++
++
++def test_selftest_is_fully_proved_with_nothing_merely_tested():
++    assert not problems(P) and not pending(P)
++    assert sum(len(r["obligations"]) for r in P.results) > 150
++
++
++def test_selftest_runs_and_prints_pass():
++    res, _ = run(P)
++    assert res.stdout == b"PASS\n" and res.exit_code == 0
++
++
++def test_a_wrong_case_is_caught_at_runtime_but_not_by_the_verifier():
++    wrong = mutate(example("selftest"), "_start", "(call sum_bytes (len s) s) 1129)", "(call sum_bytes (len s) s) 1130)")
++    Q = build(wrong)
++    assert not problems(Q), "o conteúdo de `sample` não é modelado: o verificador não pode saber que 1130 está errado"
++    res, _ = run(Q)
++    assert res.stdout == b"FAIL\n" and res.exit_code == 1
++
++
++def test_sort_matches_python_sorted():
++    for data in inputs(1):
++        assert sorted_by_prova(P, data) == bytes(sorted(data)), data
++
++
++def test_reverse_matches_python():
++    for data in inputs(2):
++        assert reversed_by_prova(P, data) == data[::-1], data
++
++
++def test_gcd_matches_math_gcd():
++    rnd = random.Random(3)
++    for _ in range(300):
++        a, b = rnd.randrange(1, 400), rnd.randrange(1, 400)
++        assert call(P, "gcd", a, b) == math.gcd(a, b), (a, b)
++
++
++def test_sum_count_max_match_python():
++    for data in inputs(4, max_len=60):
++        n = len(data)
++        assert call(P, "sum_bytes", n, Slice(data)) == sum(data)
++        for v in (0, 111, 255):
++            assert call(P, "count_byte", n, Slice(data), v) == data.count(v)
++        if n:
++            assert call(P, "max_byte", n, Slice(data)) == max(data)
++
++
++def test_no_runtime_violation_in_any_function_of_the_program():
++    for fn in P.fns:
++        if fn.name != "_start":
++            executed, violations = fuzz_function(P, fn.name, runs=150, seed=5)
++            assert executed > 0 and not violations, (fn.name, violations[:2])
++
++
++def test_functional_tests_have_teeth():
++    # uma ordenação ao contrário é SEGURA (o verificador aceita) mas errada: só a execução denuncia
++    bad = mutate(example("selftest"), "sort", "(if (> x y)", "(if (< x y)")
++    Q = build(bad)
++    assert not problems(Q)
++    assert any(sorted_by_prova(Q, d) != bytes(sorted(d)) for d in inputs(1, count=50)), "teste sem poder"
++    # e uma reversão que para cedo
++    bad2 = mutate(example("selftest"), "reverse", "(while (< (+ lo 1) hi)", "(while (< (+ lo 2) hi)")
++    Q2 = build(bad2)
++    assert not problems(Q2)
++    assert any(reversed_by_prova(Q2, d) != d[::-1] for d in inputs(2, count=50)), "teste sem poder"
++
++
++def test_selftest_emits_for_every_target():
++    for t in ("x86_64", "aarch64", "riscv64"):
++        text = emit_module(P.compiled, P.data, t)
++        for needle in ("func.func @sort", "func.func @gcd", "arith.cmpi ult", "llvm.inline_asm"):
++            assert needle in text, (t, needle)

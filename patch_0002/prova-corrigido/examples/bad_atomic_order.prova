@@ -1,0 +1,10 @@
+;; DEVE FALHAR: um load atômico não pode ter ordem `release`.
+(static flag (atomic usize) 0)
+
+(fn peek
+  (params)
+  (returns usize)
+  (effects atomic)
+  (pre)
+  (post)
+  (body (return (atomic_load flag release))))

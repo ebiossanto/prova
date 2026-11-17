@@ -1,0 +1,31 @@
+;; Regiões nos tipos + política de fluxo. O pacote entra em net-rx e pode ser COPIADO para a memória do
+;; kernel (kmem), mas a política proíbe que dado de net-rx chegue à saída (@write), nem indiretamente.
+;; `python prova.py flow examples/regions_flow.prova` mostra por onde o dado passa.
+(region net-rx)
+(region kmem)
+(deny-flow net-rx @write)
+
+(fn copy_packet
+  (params (n usize) (src (slice u8 n net-rx))
+          (m usize) (dst (slice u8 m kmem))
+          (len usize))
+  (returns unit)
+  (effects)
+  (pre (<= len n) (<= len m))
+  (post)
+  (body
+    (var i usize 0)
+    (while (< i len)
+      (invariant (<= i len))
+      (decreases (- len i))
+      (store dst i (load src i))
+      (set i (+ i 1)))))
+
+(fn handle
+  (params (n usize) (pkt (slice u8 n net-rx))
+          (m usize) (buf (slice u8 m kmem)))
+  (returns unit)
+  (effects)
+  (pre (<= n m))
+  (post)
+  (body (do (call copy_packet n pkt m buf n))))

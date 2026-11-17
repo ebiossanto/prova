@@ -321,3 +321,15 @@ def prove(hyps, goal):
         return True
     except Giveup:
         return None
+
+
+def contradictory(hyps):
+    """True se as hipóteses são PROVADAMENTE insatisfatíveis (então qualquer objetivo seria 'provado' no vazio).
+    Sólido: nunca acusa contradição que não exista; na dúvida devolve False."""
+    try:
+        cases = [[]]
+        for h in hyps:
+            cases = cross(cases, dnf(h))
+        return all(infeasible(c) or infeasible(strengthen(c)) for c in cases)
+    except Giveup:
+        return False

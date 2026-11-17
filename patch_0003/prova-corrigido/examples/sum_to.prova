@@ -1,0 +1,15 @@
+;; Soma 1..n. Provado: sem overflow, invariante, terminação e pós-condição.
+(fn sum_to
+  (params (n usize))
+  (returns usize)
+  (pre (<= n 1000))
+  (post (= (* 2 result) (* n (+ n 1))))
+  (body
+    (var i usize 0)
+    (var s usize 0)
+    (while (< i n)
+      (invariant (<= i n) (= (* 2 s) (* i (+ i 1))))
+      (decreases (- n i))
+      (set i (+ i 1))
+      (set s (+ s i)))
+    (return s)))

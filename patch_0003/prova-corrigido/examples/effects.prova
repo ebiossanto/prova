@@ -1,0 +1,31 @@
+;; Efeitos na assinatura: sem (effects ...) a função é PURA. Quem faz syscall declara, e o efeito
+;; propaga: quem chama report também precisa declarar `syscall`. Nada fica escondido atrás de uma chamada.
+(data banner "ok\n")
+
+(fn twice
+  (params (x usize))
+  (returns usize)
+  (effects)
+  (pre (<= x 1000))
+  (post (= result (* 2 x)))
+  (body (return (* x 2))))
+
+(fn report
+  (params)
+  (returns unit)
+  (effects syscall)
+  (pre)
+  (post)
+  (body
+    (let_slice b (data-ref banner))
+    (do (sys_write 1 b (len b)))))
+
+(fn _start
+  (params)
+  (returns unit)
+  (effects syscall)
+  (pre)
+  (post)
+  (body
+    (do (call report))
+    (sys_exit 0)))

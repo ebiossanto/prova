@@ -1,0 +1,45 @@
+;; Demonstração de ponta a ponta da ideia original: um "driver" mínimo que combina contratos matemáticos,
+;; posse/tamanhos no tipo, efeitos, regiões com política de fluxo, orçamento de pilha, memória atômica
+;; e syscalls. `prova.py audit` mostra só o que o humano precisa ler; `prova.py flow` mostra por onde o dado passa.
+(region net-rx)
+(region kmem)
+(deny-flow net-rx @write)                    ; dado cru da rede nunca vai para a saída
+(static received (atomic usize) 0)           ; única memória compartilhada
+(data banner "driver ok\n")
+
+(fn copy_in
+  (params (n usize) (src (slice u8 n net-rx)) (m usize) (dst (slice u8 m kmem)) (len usize))
+  (returns unit)
+  (effects)
+  (stack-budget 128)
+  (pre (<= len n) (<= len m))
+  (post)
+  (body
+    (var i usize 0)
+    (while (< i len)
+      (invariant (<= i len))
+      (decreases (- len i))
+      (store dst i (load src i))
+      (set i (+ i 1)))))
+
+(fn on_packet
+  (params (n usize) (pkt (slice u8 n net-rx)) (m usize) (buf (slice u8 m kmem)))
+  (returns unit)
+  (effects atomic)
+  (stack-budget 256)
+  (pre (<= n m))
+  (post)
+  (body
+    (do (call copy_in n pkt m buf n))
+    (do (atomic_fetch_add received 1 relaxed))))
+
+(fn announce
+  (params)
+  (returns unit)
+  (effects syscall)
+  (stack-budget 128)
+  (pre)
+  (post)
+  (body
+    (let_slice b (data-ref banner))
+    (do (sys_write 1 b (len b)))))

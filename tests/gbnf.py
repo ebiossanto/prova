@@ -2,7 +2,7 @@
 Semântica por conjuntos de posições finais (sem backtracking exponencial)."""
 import re
 
-TOK = re.compile(r'\s*(?:("(?:[^"\\]|\\.)*")|(\[(?:[^\]\\]|\\.)*\])|;;[^\n]*\n|([A-Za-z_][\w-]*)|([()|*+?]))')
+TOK = re.compile(r'\s*(?:("(?:[^"\\]|\\.)*")|(\[(?:[^\]\\]|\\.)*\])|([A-Za-z_][\w-]*)|([()|*+?]))')
 ESC = {"n": "\n", "t": "\t", "\\": "\\", '"': '"', "]": "]", "[": "[", "-": "-", "^": "^"}
 
 
@@ -152,13 +152,4 @@ class Matcher:
 
 
 def accepts(rules, text, start="root"):
-    # Strip ;; comments and normalize whitespace
-    lines = text.splitlines()
-    cleaned_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(";;"):
-            continue
-        cleaned_lines.append(stripped)
-    cleaned = " ".join(cleaned_lines)
-    return len(cleaned) in Matcher(rules, cleaned).m(("ref", start), 0)
+    return len(text) in Matcher(rules, text).m(("ref", start), 0)

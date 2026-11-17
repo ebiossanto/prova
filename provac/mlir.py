@@ -2,15 +2,10 @@
 aritmética já provada sem overflow recebe flags nsw/nuw."""
 from .check import ARITH, CMP, ProvaError, base, is_slice, show, ty
 
-MLT = {"i64": "i64", "usize": "i64", "u8": "i8", "ptr": "i8", "atomic": "i8"}
-
-
-def is_ptr_type(T):
-    return isinstance(T, list) and T[0] == "ptr"
-
-
-def is_atomic_type(T):
-    return isinstance(T, list) and T[0] == "own" and len(T) >= 3 and T[1] == "atomic"
+MLT = {"i64": "i64", "usize": "i64", "u8": "i8"}
+# Ordens de memória: nomes do dialeto `llvm` (relaxed = monotonic). NÃO validado com mlir-opt.
+MO = {"relaxed": "monotonic", "acquire": "acquire", "release": "release",
+      "acq_rel": "acq_rel", "seq_cst": "seq_cst"}
 
 # Convenção de syscalls Linux por arquitetura: registrador do número, de argumentos, de saída, clobbers.
 ABI = {
@@ -25,8 +20,9 @@ TRIPLE = {"x86_64": "x86_64-unknown-linux-gnu", "aarch64": "aarch64-unknown-linu
 
 
 class Em:
-    def __init__(self, fn, cx, target, sigs=None):
+    def __init__(self, fn, cx, target, sigs=None, meta=None):
         self.fn, self.cx, self.target, self.sigs = fn, cx, target, sigs or {}
+        self.meta = meta or {"statics": {}, "static_init": {}}
         self.o, self.n, self.term = [], 0, False
         self.params = {n for n, T in fn.params if not is_slice(T)}
 
@@ -81,14 +77,8 @@ class Em:
             self.w(f"{r} = memref.load %v_{e}[] : memref<{MLT[T]}>")
             return r, T
         op = e[0]
-        if op in ARITH or op in CMP:
+        if op in ARITH:
             T = ty(e, cx) or want or "i64"
-            if is_ptr_type(T) or is_atomic_type(T):
-                T_base = base(T)
-                a, _ = self.ex(e[1], T_base)
-                r = self.t()
-                self.w(f"{r} = memref.load !volatile %v_{a}[] : memref<?xi8>")
-                return r, T
             a, _ = self.ex(e[1], T)
             b, _ = self.ex(e[2], T)
             r = self.t()
@@ -167,7 +157,33 @@ class Em:
             r = self.t()
             self.w(f"{r} = {head} -> {MLT[g.ret]}")
             return r, g.ret
+        if op in ("atomic_load", "atomic_store", "atomic_fetch_add", "atomic_cas"):
+            return self.atomic(e)
         raise ProvaError(f"emissão: forma desconhecida {show(e)}")
+
+    def atomic(self, e):
+        """Atômicos sobre (static ...): ops reais do dialeto llvm, com a ordem escolhida pelo programa."""
+        op, name = e[0], e[1]
+        T = self.meta["statics"][name]
+        p = self.t()
+        self.w(f"{p} = llvm.mlir.addressof @{name} : !llvm.ptr")
+        if op == "atomic_load":
+            r = self.t()
+            self.w(f"{r} = llvm.load {p} atomic {MO[e[2]]} {{alignment = 8 : i64}} : !llvm.ptr -> i64")
+            return r, T
+        v, _ = self.ex(e[2], T)
+        if op == "atomic_store":
+            self.w(f"llvm.store {v}, {p} atomic {MO[e[3]]} {{alignment = 8 : i64}} : i64, !llvm.ptr")
+            return None, "unit"
+        if op == "atomic_fetch_add":
+            r = self.t()
+            self.w(f"{r} = llvm.atomicrmw add {p}, {v} {MO[e[3]]} : !llvm.ptr, i64")
+            return r, T
+        n, _ = self.ex(e[3], T)
+        c, r = self.t(), self.t()
+        self.w(f"{c} = llvm.cmpxchg {p}, {v}, {n} {MO[e[4]]} {MO[e[5]]} : !llvm.ptr, i64")
+        self.w(f"{r} = llvm.extractvalue {c}[0] : !llvm.struct<(i64, i1)>")
+        return r, T
 
     # ---- instruções ----
     def block(self, stmts):
@@ -196,6 +212,8 @@ class Em:
             self.w(f"memref.store {v}, %p_{s[1]}[{ix}] : memref<?xi8>")
         elif h == "do":
             self.ex(s[1])
+        elif h == "atomic_store":
+            self.ex(s)
         elif h in ("assert", "drop"):
             pass  # provado em tempo de compilação: nenhum código em tempo de execução
         elif h == "return":
@@ -265,13 +283,16 @@ class Em:
         return "\n".join(out + self.o + ["  }"])
 
 
-def emit_module(fns_cx, data_bytes, target):
+def emit_module(fns_cx, data_bytes, target, meta=None):
+    meta = meta or (fns_cx[0][1].meta if fns_cx else None) or {"statics": {}, "static_init": {}}
     parts = ["module {"]
+    for name in meta["statics"]:
+        parts.append(f"  llvm.mlir.global internal @{name}({meta['static_init'][name]} : i64) : i64")
     for name, b in data_bytes.items():
         vals = ", ".join(str(x - 256 if x > 127 else x) for x in b)
         parts.append(f'  memref.global "private" constant @{name} : memref<{len(b)}xi8> = dense<[{vals}]>')
     sigs = {fn.name: fn for fn, _ in fns_cx}
     for fn, cx in fns_cx:
-        parts.append(Em(fn, cx, target, sigs).emit())
+        parts.append(Em(fn, cx, target, sigs, meta).emit())
     parts.append("}")
     return "\n".join(parts) + "\n"

@@ -1,0 +1,7 @@
+;; DEVE FALHAR: o buffer (own ...) nunca é consumido: vazamento.
+(fn consume
+  (params (n usize) (buf (own (slice u8 n))))
+  (returns unit)
+  (pre)
+  (post)
+  (body (return)))

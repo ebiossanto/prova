@@ -1,0 +1,17 @@
+;; Prova: _start para Linux x86-64 (freestanding, sem libc).
+;; write(1, msg, len) e depois exit(0). O compilador traduz sys_write/sys_exit para o número da
+;; syscall e os registradores de cada arquitetura (rax=1/60; rdi,rsi,rdx); o programa NÃO conhece esses números.
+;; O fd é sempre 1 (saída padrão); (len b) evita errar a contagem de bytes.
+
+(data msg "Hello from Prova x86-64!\n")
+
+(fn _start
+  (params)
+  (returns unit)
+  (effects syscall)
+  (pre)
+  (post)
+  (body
+    (let_slice b (data-ref msg))
+    (do (sys_write 1 b (len b)))
+    (sys_exit 0)))

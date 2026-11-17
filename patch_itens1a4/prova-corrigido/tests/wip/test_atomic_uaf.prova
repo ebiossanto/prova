@@ -1,0 +1,9 @@
+;; Padrão proibido: atomic vazando de escopo local (teste de linear checking)
+;; O linear checker deve rejeitar escape de valores de tipo atomic
+;; sinteticamente representado aqui com usize para compatibilidade de parser
+(fn atomic_leak_test
+  (params (val usize))
+  (returns usize)
+  (pre)
+  (post)
+  (body 0))

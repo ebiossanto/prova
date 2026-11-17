@@ -24,3 +24,12 @@ if grep -q '@_start' "build/$NAME.$TARGET.ll"; then
   ld.lld -static -nostdlib -e _start -o "build/$NAME.$TARGET" "build/$NAME.$TARGET.o"
   echo "binário: build/$NAME.$TARGET"
 fi
+# 6. Kernel bare-metal (função kmain): stub de boot + linker script gerados e ligados.
+#    NÃO TESTADO de ponta a ponta (precisa de clang e ld.lld); o stub x86_64 é testado em tests/test_boot.py.
+if grep -q '@kmain' "build/$NAME.$TARGET.ll"; then
+  python3 prova.py boot --target "$TARGET" --part asm > "build/boot.$TARGET.S"
+  python3 prova.py boot --target "$TARGET" --part ld  > "build/linker.$TARGET.ld"
+  clang --target="$TRIPLE" -c "build/boot.$TARGET.S" -o "build/boot.$TARGET.o"
+  ld.lld -T "build/linker.$TARGET.ld" -nostdlib -o "build/$NAME.$TARGET.elf" "build/boot.$TARGET.o" "build/$NAME.$TARGET.o"
+  echo "kernel: build/$NAME.$TARGET.elf"
+fi

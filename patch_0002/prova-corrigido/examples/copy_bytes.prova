@@ -1,0 +1,15 @@
+;; Copia len bytes. Provado: todo load/store dentro dos limites; sem overflow em i.
+(fn copy_bytes
+  (params (n usize) (dst (slice u8 n))
+          (m usize) (src (slice u8 m))
+          (len usize))
+  (returns unit)
+  (pre (<= len n) (<= len m))
+  (post)
+  (body
+    (var i usize 0)
+    (while (< i len)
+      (invariant (<= i len))
+      (decreases (- len i))
+      (store dst i (load src i))
+      (set i (+ i 1)))))

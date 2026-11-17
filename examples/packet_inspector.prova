@@ -1,0 +1,105 @@
+;; Programa de teste de ponta a ponta: um INSPETOR DE PACOTES.
+;;   - pacotes chegam na região net-rx; a política proíbe que dado de net-rx saia pela saída (@write);
+;;   - cada pacote é validado (tamanho mínimo + byte mágico 'P' = 80) e, se válido, somado (checksum);
+;;   - contadores e o último checksum ficam em células atômicas (a única memória compartilhada);
+;;   - o veredito ("ACCEPT"/"DROP") sai por syscall; o código de saída é o número de pacotes aceitos.
+;; Tudo é provado: sem overflow, sem acesso fora dos limites, terminação, contratos, efeitos, pilha e política.
+;;   python prova.py check|audit|flow|stack|emit|run examples/packet_inspector.prova
+(region net-rx)
+(deny-flow net-rx @write)
+
+(static accepted (atomic usize) 0)
+(static dropped (atomic usize) 0)
+(static last_sum (atomic usize) 0)
+
+(data pkt_ok "PING hello" net-rx)
+(data pkt_bad "xyz" net-rx)
+(data pkt_short "P" net-rx)
+(data msg_ok "ACCEPT\n")
+(data msg_drop "DROP\n")
+
+;; Soma dos bytes. Cota provada: cada byte vale no máximo 255, logo a soma nunca passa de 255*n.
+(fn checksum
+  (params (n usize) (buf (slice u8 n net-rx)))
+  (returns usize)
+  (effects)
+  (stack-budget 128)
+  (pre (<= n 4096))
+  (post (<= result (* 255 n)))
+  (body
+    (var i usize 0)
+    (var s usize 0)
+    (while (< i n)
+      (invariant (<= i n) (<= s (* 255 i)))
+      (decreases (- n i))
+      (set s (+ s (cast usize (load buf i))))
+      (set i (+ i 1)))
+    (return s)))
+
+;; 1 se o pacote tem pelo menos 2 bytes e começa com o byte mágico 'P' (80).
+(fn well_formed
+  (params (n usize) (buf (slice u8 n net-rx)))
+  (returns usize)
+  (effects)
+  (stack-budget 64)
+  (pre)
+  (post (<= result 1))
+  (body
+    (if (< n 2) (then (return 0)))
+    (if (= (load buf 0) 80) (then (return 1)))
+    (return 0)))
+
+;; Valida, soma e contabiliza. Retorna 1 se aceitou.
+(fn inspect
+  (params (n usize) (pkt (slice u8 n net-rx)))
+  (returns usize)
+  (effects atomic)
+  (stack-budget 256)
+  (pre (<= n 4096))
+  (post (<= result 1))
+  (body
+    (let ok usize (call well_formed n pkt))
+    (if (= ok 1)
+      (then
+        (let sum usize (call checksum n pkt))
+        (atomic_store last_sum sum relaxed)
+        (do (atomic_fetch_add accepted 1 relaxed))
+        (return 1)))
+    (do (atomic_fetch_add dropped 1 relaxed))
+    (return 0)))
+
+;; O texto do veredito vem de rodata, nunca do pacote.
+(fn verdict
+  (params (ok usize))
+  (returns unit)
+  (effects syscall)
+  (stack-budget 128)
+  (pre (<= ok 1))
+  (post)
+  (body
+    (if (= ok 1)
+      (then
+        (let_slice a (data-ref msg_ok))
+        (do (sys_write 1 a (len a)))
+        (return)))
+    (let_slice d (data-ref msg_drop))
+    (do (sys_write 1 d (len d)))))
+
+(fn _start
+  (params)
+  (returns unit)
+  (effects syscall atomic)
+  (stack-budget 512)
+  (pre)
+  (post)
+  (body
+    (let_slice a (data-ref pkt_ok))
+    (let_slice b (data-ref pkt_bad))
+    (let_slice c (data-ref pkt_short))
+    (let ra usize (call inspect (len a) a))
+    (do (call verdict ra))
+    (let rb usize (call inspect (len b) b))
+    (do (call verdict rb))
+    (let rc usize (call inspect (len c) c))
+    (do (call verdict rc))
+    (sys_exit (cast i64 (+ (+ ra rb) rc)))))

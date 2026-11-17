@@ -1,0 +1,2511 @@
+diff --git a/README.md b/README.md
+index c71acae..1d9ff57 100644
+--- a/README.md
++++ b/README.md
+@@ -7,35 +7,49 @@ obrigação e só então emite MLIR.
+ 
+ > **Leia a tabela de estado abaixo antes de confiar em qualquer afirmação.** Cada linha aponta o teste que a sustenta.
+ 
++## A ideia original e onde cada parte está
++A Prova combina três abordagens como camadas de um mesmo sistema:
++**sintaxe** (S-expressions + gramática, para a IA nunca errar pontuação), **semântica** (contratos matemáticos, tipos
++lineares e dependentes, provas) e **recursos de hardware** (efeitos, regiões, pilha, atômicos, syscalls, boot).
++O humano audita só os contratos (`prova.py audit`); a IA corrige o corpo e **não pode alterar os contratos** (`prova.py fix`).
++
+ ## Estado real
+ 
+-| Componente | Estado | Evidência |
++| Parte da ideia | Estado | Evidência |
+ |---|---|---|
+-| Leitor S-expr, tipos estritos (`i64`, `usize`, `u8`, fatias), `cast` explícito | ✅ implementado | `tests/test_checker.py` |
+-| Contratos, laços (`invariant` + `decreases`), VCs de overflow/limites/invariantes/terminação | ✅ | `test_good_examples_are_fully_proved` |
+-| Posse linear (`own`, `drop`, movimento em chamadas), chamadas com contratos, sem recursão | ✅ | `test_bad_examples_are_rejected_...` |
+-| Provador linear interno (Fourier–Motzkin + McCormick), sem Z3 | ✅ sólido por fuzzing; incompleto | `tests/test_linarith_fuzz.py` |
+-| Z3 opcional para o que o provador interno não fecha | ⚠️ caminho existe, **não testado** (sem Z3 no desenvolvimento) | n/d |
+-| Gramática GBNF (`spec/prova.gbnf`) para constrained decoding | ✅ testada com mini-interpretador | `tests/test_grammar.py` |
+-| Emissão MLIR (texto) para 3 alvos, syscalls traduzidas por arquitetura | ⚠️ texto gerado e estrutura testada; **nunca passou por `mlir-opt`/`llc`** | `tests/test_emit.py` |
+-| `audit` (contratos + efeitos), `--strict`, `--json` | ✅ | `tests/test_checker.py` |
+-| Boot bare-metal x86-64 (pilha, `.bss`, linker script) | ✅ montado, ligado e **executado** | `test_x86_64_stub_assembles_links_and_runs` |
+-| Boot bare-metal AArch64 e RISC-V | ⚠️ gerados e verificados só estruturalmente; **não montados nem rodados** | `tests/test_boot.py` |
+-| Laço de correção com IA (`ai_correction_loop.py`) | ❌ simulado; não chama modelo | n/d |
+-| Porte para Lean 4 (`lean/`) | ❌ esboço; `Prova.lean` é um stub; `lake build` não foi validado | n/d |
+-| Atômicos, `ptr`/MMIO com regiões, conteúdo de fatias, alocação, concorrência | ❌ não implementado | `examples/wip/` |
++| Contratos `pre`/`post`, erros matemáticos detalhados (`--json`), `pre` contraditória é erro | ✅ | `test_checker.py`, `test_fix_loop.py` |
++| Tipos estritos, tamanhos no tipo (`(slice u8 n)`), overflow e limites provados | ✅ | `test_checker.py` |
++| Posse linear (`own`, `drop`, movimento em chamadas), chamadas com contratos, sem recursão | ✅ | `test_checker.py` |
++| **Efeitos nas assinaturas** (`syscall`, `atomic`), propagação por chamadas | ✅ | `test_effects.py` |
++| **Regiões e fluxo de dados** (`flow`, `--dot`, `deny-flow` transitivo) | ✅ só fluxo explícito de valores | `test_flow.py` |
++| **Orçamento de pilha** pelo grafo de chamadas | ⚠️ quadros de um *modelo de custo*; valores reais via `--frames` | `test_stack.py` |
++| **Memória concorrente**: `static` atômico, ordens de memória tipadas, emissão `llvm` | ⚠️ checagem de tipos testada; MLIR atômico não validado | `test_atomics.py` |
++| **Laço fechado com a IA** com contratos travados (`prova.py fix`) | ✅ mecânica, com modelo de teste determinístico; plugue seu modelo via `--model-cmd` | `test_fix_loop.py` |
++| Provador linear interno (Fourier–Motzkin + McCormick), sem Z3 | ✅ sólido por fuzzing; incompleto | `test_linarith_fuzz.py` |
++| Gramática GBNF para constrained decoding | ✅ testada com mini-interpretador | `test_grammar.py` |
++| Emissão MLIR para 3 alvos, syscalls por arquitetura | ⚠️ texto gerado e estrutura testada; **nunca passou por `mlir-opt`/`llc`** | `test_emit.py` |
++| Boot bare-metal x86-64 (pilha, `.bss`, linker script) | ✅ montado, ligado e **executado** | `test_boot.py` |
++| Boot AArch64 e RISC-V | ⚠️ só estrutura (sem toolchain/QEMU) | `test_boot.py` |
++| Z3 opcional | ⚠️ caminho existe, **não testado** | n/d |
++| Registradores como recursos lineares, MMIO/ponteiros, alocador, conteúdo de fatias (arrays), certificados Lean, threads/lock-free | ❌ não implementado | `docs/STATUS.md` |
+ 
+-Detalhe por fase do roadmap: [`docs/STATUS.md`](docs/STATUS.md).
++Mapa completo da ideia original: [`docs/STATUS.md`](docs/STATUS.md).
+ 
+ ## Uso
+ ```
+ python prova.py check  examples/sum_to.prova            # relatório (--json p/ máquinas, --strict: exige tudo provado)
++python prova.py audit  examples/regions_flow.prova      # SÓ contratos, efeitos, regiões, políticas: o que o humano audita
++python prova.py flow   examples/bad_flow.prova [--dot]  # por onde os dados passam entre regiões (e violações de política)
++python prova.py stack  examples/stack_budget.prova [--frames frames.json]
+ python prova.py emit   examples/hello.prova --target aarch64
+-python prova.py audit  examples/calls.prova             # só contratos e efeitos: o que o humano audita
++python prova.py fix    prog.prova --model-cmd "SEU_COMANDO" [--max-iter 5] [--out novo.prova]
+ python prova.py boot   --target riscv64 --part asm      # stub de boot (--part ld: linker script; --entry NOME)
+ scripts/build.sh examples/x86_64_start.prova x86_64     # pipeline completo; exige LLVM/MLIR e ld.lld
+ ```
+-`boot/` guarda os arquivos gerados para `kmain` (`python prova.py boot ...` os regenera; um teste impede divergência).
++**`fix`**: `SEU_COMANDO` lê um JSON no stdin (`source`, `errors` com rótulo/objetivo/contraexemplo, `locked`, `feedback`) e
++imprime o fonte `.prova` completo. O laço só aceita candidatos que preservam assinatura, `pre`, `post`, `effects`,
++`stack-budget`, regiões, `deny-flow` e `static` de cada função original; tentar "consertar" enfraquecendo o contrato é
++rejeitado e o modelo recebe esse feedback. Veja `tests/fake_model.py`.
+ 
+ ## Testes
+ ```
+@@ -43,15 +57,16 @@ python tests/run_tests.py        # sem dependências; sai com código != 0 se al
+ python tests/run_tests.py -k emit
+ ```
+ `pytest tests/` também funciona. O CI (`.github/workflows/ci.yml`) roda em Linux e Windows.
+-Testado localmente em Python 3.12.
++Testado localmente em Python 3.12 (68 testes).
+ 
+ ## Estrutura
+ ```
+ provac/    sexp.py (leitor) · check.py (tipos + VCs) · linear.py (posse) · linarith.py (provador interno)
++           effects.py · flow.py (regiões/fluxo) · stack.py · program.py (programa completo) · loop.py (laço com a IA)
+            smt.py (provador interno → Z3 → teste limitado) · mlir.py (emissão) · audit.py · boot.py
+ spec/      prova.gbnf (gramática) · LANGUAGE.md      boot/   stubs e linker scripts gerados
+ examples/  programas que DEVEM verificar (+ bad_*.prova, que DEVEM ser recusados) · wip/ (experimentos que ainda não funcionam)
+-tests/     test_*.py + run_tests.py · wip/ (casos a reescrever)      lean/  esboço (ver tabela)
++tests/     test_*.py + run_tests.py + fake_model.py · wip/ (casos a reescrever)      lean/  esboço (ver docs/STATUS.md)
+ docs/      STATUS.md · archive/ (documentos antigos; contêm afirmações não verificadas)
+ ```
+ 
+@@ -60,7 +75,11 @@ docs/      STATUS.md · archive/ (documentos antigos; contêm afirmações não
+ - **testado**: só valores de borda foram enumerados; um contraexemplo achado é real, mas a ausência **não** prova nada.
+   Use `--strict` para recusar qualquer obrigação que não esteja provada.
+ - Contratos podem estar errados: a prova garante o programa contra o contrato, não o contrato contra a intenção.
+-- "Nunca estoura memória" vale só contra os limites declarados; alocação dinâmica ainda não existe.
++- "Nunca estoura memória" vale só contra os limites declarados; alocação dinâmica ainda não existe, e a pilha usa um modelo de custo
++  até que se informe `--frames` medidos no backend.
++- Fluxo de dados: só fluxo explícito de valores; fluxo implícito (por `if`/`while`) e vazamento por comprimento não são rastreados.
++- Atômicos: a Prova garante tipos e ordens legais e que só células atômicas são compartilhadas; **não** verifica que a ordem escolhida
++  baste para a correção de um algoritmo lock-free.
+ 
+ ## Observação
+ GBNF é a notação BNF do GGML/llama.cpp (a gramática serve a decodificadores que a aceitam, p.ex. llama.cpp).
+diff --git a/docs/STATUS.md b/docs/STATUS.md
+index fbfb80a..b695a39 100644
+--- a/docs/STATUS.md
++++ b/docs/STATUS.md
+@@ -1,20 +1,45 @@
+-# Estado real por fase (13/nov/2026)
++# Estado real (14/nov/2026): a ideia original, item por item
+ 
+-Substitui `docs/archive/PROVA_STATUS.md`, `PROJECT_SUMMARY.md`, `CONCLUSION.md` e `NEXT_STEPS.md`, que se contradiziam
+-(p.ex. a Fase 2 aparecia como ✅ e como "bloqueada") e contavam exemplos de formas diferentes.
+-Legenda: ✅ funciona e tem teste · ⚠️ parcial ou não validado no ambiente-alvo · ❌ não funciona / não existe.
++Substitui os documentos de status antigos (`docs/archive/`), que se contradiziam.
++Legenda: ✅ funciona e tem teste · ⚠️ parcial ou não validado no ambiente-alvo · ❌ não existe.
+ 
+-| Fase | Estado | O que existe | O que falta para fechar |
+-|---|---|---|---|
+-| 1. Gramática + testes | ✅ | `spec/prova.gbnf` aceita todos os exemplos e rejeita 9 programas inválidos (`tests/test_grammar.py`). Uma versão anterior teve a regra de `call` quebrada e o teste enfraquecido; ambos foram restaurados. | Manter a gramática alinhada ao verificador a cada novo recurso. |
+-| 2. Porte para Lean 4 | ❌ | `lean/Prova/Sexp.lean` (leitor) e `Core.lean` (teorema do `nsw`/`nuw`), **nunca compilados**. `Prova.lean` é um stub. | Instalar com `elan`, ajustar o módulo raiz do `lakefile`, rodar `lake build`, portar tipos e VCs. |
+-| 3. Conteúdo de fatias (arrays no SMT) | ❌ | Nada. A versão anterior declarava `(UInt 8)` (sort inválido em SMT-LIB) e nunca o usava. | Teoria de arrays em contratos (`load` hoje é proibido em contratos); precisa de Z3 para testar. |
+-| 4. Boot | ⚠️ | `prova.py boot` gera stub + linker script por arquitetura; x86-64 **montado, ligado e executado**. `_start` corrigidos (fd 1, `exit(0)`, `(len b)`). | Montar/rodar AArch64 e RISC-V (clang + QEMU); passar a `kmain` compilada pelo LLVM; testar `scripts/build.sh`. |
+-| 5. `ptr`/MMIO com regiões | ❌ | Nada utilizável: o código em `check.py` (`is_ptr`) nunca é verdadeiro e nenhum programa usa `ptr`. | Tipo `ptr` com região, leitura/escrita volátil emitida como op real do dialeto `llvm`. |
+-| 6. Relatório por região | ⚠️ | `audit` mostra contratos e efeitos (lê/escreve/syscall/chama/consome). | Regiões ainda não existem (depende da Fase 5). |
+-| 7. Laço de correção com IA | ⚠️ | `check --json` devolve obrigações com `label`, `goal`, `status`, contraexemplo. | O laço (`ai_correction_loop.py`) é simulado: chamar um modelo de verdade e travar assinatura e contratos entre iterações. |
+-| 8. Atômicos | ❌ | Nada utilizável: `(atomic u32)` é rejeitado, `u32` não existe, não há operações atômicas. Experimentos em `examples/wip/`. | Tipo `u32`, `atomic_load/store/fetch_add/cas` com ordem checada, emissão como `load atomic`/`atomicrmw`/`cmpxchg`. |
++## Camada 1: semântica (contratos, tipos, provas)
++| Item | Estado | Notas |
++|---|---|---|
++| `pre`/`post` obrigatórios; erros matemáticos para a IA (`--json`: rótulo, objetivo, contraexemplo) | ✅ | |
++| `pre` contraditória (tornaria toda prova vazia) é erro | ✅ | detectada pelo provador interno, fuzzing sem falso alarme |
++| Overflow, limites, invariantes, terminação, `post` provados | ✅ | provador interno + Z3 opcional |
++| Tipos dependentes leves: comprimento da fatia no tipo, exigido nas chamadas | ✅ | |
++| Posse linear de fatias (`own`, `drop`, movimento) | ✅ | |
++| Conteúdo de fatias em contratos (ex.: "dst é cópia de src") | ❌ | precisa de teoria de arrays/quantificadores (Z3) |
++| Certificados Lean 4 para o que o SMT não fecha | ❌ | `lean/` é esboço nunca compilado |
+ 
+-## Código inativo que sobrou
+-`check.py` ainda tem `is_ptr`, `is_atomic` e `PTR_REGIONS`/`ATOMIC_ORDERS` (e `audit.py` uma checagem de região): nunca
+-executam. Remova ou conclua junto com as Fases 5 e 8.
++## Camada 2: sintaxe para IA
++| Item | Estado | Notas |
++|---|---|---|
++| S-expressions sem açúcar, sem conversão implícita | ✅ | |
++| Gramática GBNF para constrained decoding | ✅ | testada com mini-interpretador (aceita todos os exemplos, rejeita 16 inválidos) |
++| Laço fechado com a IA, contratos travados | ✅ mecânica | modelo de teste determinístico; a integração com um LLM real é externa (`--model-cmd`) |
++
++## Camada 3: recursos de hardware
++| Item | Estado | Notas |
++|---|---|---|
++| Efeitos na assinatura (`syscall`, `atomic`) com propagação | ✅ | `mmio` ainda não (não há ponteiros) |
++| Regiões nos tipos, relatório de fluxo (`flow`, `--dot`), `deny-flow` transitivo | ✅ | só fluxo explícito de valores |
++| Orçamento de pilha pelo grafo de chamadas | ⚠️ | quadros de um modelo de custo; `--frames` aceita medidas do backend (não testado contra LLVM real) |
++| Memória concorrente: `static` atômico, ordens tipadas, emissão `llvm.load/store atomic`, `atomicrmw`, `cmpxchg` | ⚠️ | tipos e ordens testados; sintaxe MLIR atômica **não validada**; sem threads nem verificação de protocolos lock-free |
++| Syscalls por arquitetura (números e registradores) | ✅ texto | `write` e `exit`; MLIR nunca passou por `mlir-opt`/`llc` |
++| Registradores da CPU como recursos lineares | ❌ | |
++| MMIO / ponteiros com regiões | ❌ | |
++| Gerenciamento manual de memória (alocador verificado) | ❌ | só posse linear de fatias recebidas |
++| Boot freestanding x86-64 (pilha, `.bss`, linker script) | ✅ | montado, ligado e executado |
++| Boot AArch64 e RISC-V | ⚠️ | gerados; só estrutura verificada |
++
++## O que bloqueia o próximo salto
++1. **Ferramentas ausentes no ambiente de desenvolvimento**: LLVM/MLIR, QEMU, Z3 e Lean. Tudo marcado ⚠️ depende delas.
++2. **Arrays/quantificadores**: sem eles não dá para provar corretude *funcional* de cópia, ordenação, buffers circulares.
++3. **Ponteiros e MMIO** (e, com eles, `u32`): destravam drivers, `ring_buffer` e os experimentos de `examples/wip/`.
++
++## Histórico
++As Fases 1 a 8 do roadmap antigo (`docs/archive/PROJECT_ROADMAP.md`) estão cobertas assim: gramática ✅, Lean ❌, arrays ❌,
++boot ⚠️/✅, ptr/MMIO ❌, relatório por região ✅, laço de IA ✅ (mecânica), atômicos ⚠️.
+diff --git a/examples/aarch64_start.prova b/examples/aarch64_start.prova
+index 633d92b..6f8ab0d 100644
+--- a/examples/aarch64_start.prova
++++ b/examples/aarch64_start.prova
+@@ -8,6 +8,7 @@
+ (fn _start
+   (params)
+   (returns unit)
++  (effects syscall)
+   (pre)
+   (post)
+   (body
+diff --git a/examples/atomic_counter.prova b/examples/atomic_counter.prova
+new file mode 100644
+index 0000000..bf1651a
+--- /dev/null
++++ b/examples/atomic_counter.prova
+@@ -0,0 +1,44 @@
++;; Modelo de memória concorrente: a ÚNICA memória compartilhada são células (static ... (atomic T)).
++;; Todo o resto é posse linear, então não há corrida de dados fora dos atômicos. Cada operação escolhe
++;; sua ordem de memória; ordens ilegais (load com release, store com acquire, cas com falha mais forte
++;; que o sucesso) são erro de tipo. Publicação release/acquire: o consumidor que vê ready=1 com acquire
++;; enxerga o valor gravado antes do store release.
++(static counter (atomic usize) 0)
++(static ready (atomic usize) 0)
++
++(fn bump
++  (params)
++  (returns usize)
++  (effects atomic)
++  (pre)
++  (post)
++  (body (return (atomic_fetch_add counter 1 relaxed))))
++
++(fn publish
++  (params (v usize))
++  (returns unit)
++  (effects atomic)
++  (pre)
++  (post)
++  (body
++    (atomic_store counter v relaxed)
++    (atomic_store ready 1 release)))
++
++(fn consume
++  (params)
++  (returns usize)
++  (effects atomic)
++  (pre)
++  (post)
++  (body
++    (let r usize (atomic_load ready acquire))
++    (if (= r 1) (then (return (atomic_load counter relaxed))))
++    (return 0)))
++
++(fn try_claim
++  (params)
++  (returns usize)
++  (effects atomic)
++  (pre)
++  (post)
++  (body (return (atomic_cas ready 0 1 acq_rel acquire))))
+diff --git a/examples/bad_atomic_order.prova b/examples/bad_atomic_order.prova
+new file mode 100644
+index 0000000..381bb93
+--- /dev/null
++++ b/examples/bad_atomic_order.prova
+@@ -0,0 +1,10 @@
++;; DEVE FALHAR: um load atômico não pode ter ordem `release`.
++(static flag (atomic usize) 0)
++
++(fn peek
++  (params)
++  (returns usize)
++  (effects atomic)
++  (pre)
++  (post)
++  (body (return (atomic_load flag release))))
+diff --git a/examples/bad_effect.prova b/examples/bad_effect.prova
+new file mode 100644
+index 0000000..fe6eb77
+--- /dev/null
++++ b/examples/bad_effect.prova
+@@ -0,0 +1,20 @@
++;; DEVE FALHAR: `wrapper` se declara pura, mas chama `noisy`, que faz syscall.
++(data msg "x\n")
++
++(fn noisy
++  (params)
++  (returns unit)
++  (effects syscall)
++  (pre)
++  (post)
++  (body
++    (let_slice b (data-ref msg))
++    (do (sys_write 1 b (len b)))))
++
++(fn wrapper
++  (params)
++  (returns unit)
++  (effects)
++  (pre)
++  (post)
++  (body (do (call noisy))))
+diff --git a/examples/bad_flow.prova b/examples/bad_flow.prova
+new file mode 100644
+index 0000000..7f42b22
+--- /dev/null
++++ b/examples/bad_flow.prova
+@@ -0,0 +1,31 @@
++;; DEVE FALHAR: o pacote de net-rx é copiado para kmem e kmem vai para a saída: net-rx → kmem → @write,
++;; violando (deny-flow net-rx @write) mesmo sem nenhum fluxo direto.
++(region net-rx)
++(region kmem)
++(deny-flow net-rx @write)
++
++(fn copy_packet
++  (params (n usize) (src (slice u8 n net-rx))
++          (m usize) (dst (slice u8 m kmem))
++          (len usize))
++  (returns unit)
++  (effects)
++  (pre (<= len n) (<= len m))
++  (post)
++  (body
++    (var i usize 0)
++    (while (< i len)
++      (invariant (<= i len))
++      (decreases (- len i))
++      (store dst i (load src i))
++      (set i (+ i 1)))))
++
++(fn leak
++  (params (n usize) (pkt (slice u8 n net-rx)) (buf (slice u8 n kmem)))
++  (returns unit)
++  (effects syscall)
++  (pre)
++  (post)
++  (body
++    (do (call copy_packet n pkt n buf n))
++    (do (sys_write 1 buf n))))
+diff --git a/examples/bad_pre.prova b/examples/bad_pre.prova
+new file mode 100644
+index 0000000..5817309
+--- /dev/null
++++ b/examples/bad_pre.prova
+@@ -0,0 +1,14 @@
++;; DEVE FALHAR: o corpo tem o bug de bad_bounds, mas a pre é contraditória (usize nunca é < 0): todas as
++;; obrigações seriam "provadas" no vazio. O verificador acusa a pré-condição contraditória.
++(fn fill
++  (params (n usize) (dst (slice u8 n)) (len usize))
++  (returns unit)
++  (pre (<= len n) (< len 0))
++  (post)
++  (body
++    (var i usize 0)
++    (while (<= i len)
++      (invariant (<= i len))
++      (decreases (- len i))
++      (store dst i 0)
++      (set i (+ i 1)))))
+diff --git a/examples/bad_stack.prova b/examples/bad_stack.prova
+new file mode 100644
+index 0000000..a2b0c6a
+--- /dev/null
++++ b/examples/bad_stack.prova
+@@ -0,0 +1,19 @@
++;; DEVE FALHAR: mid chama leaf; o pior caso (32 + 24 = 56 bytes no modelo) excede o orçamento de 40.
++(fn leaf
++  (params (x usize))
++  (returns usize)
++  (effects)
++  (pre (<= x 100))
++  (post (= result (+ x 1)))
++  (body (return (+ x 1))))
++
++(fn mid
++  (params (x usize))
++  (returns usize)
++  (effects)
++  (stack-budget 40)
++  (pre (<= x 100))
++  (post (<= result 101))
++  (body
++    (let y usize (call leaf x))
++    (return y)))
+diff --git a/examples/driver_demo.prova b/examples/driver_demo.prova
+new file mode 100644
+index 0000000..f5a8305
+--- /dev/null
++++ b/examples/driver_demo.prova
+@@ -0,0 +1,45 @@
++;; Demonstração de ponta a ponta da ideia original: um "driver" mínimo que combina contratos matemáticos,
++;; posse/tamanhos no tipo, efeitos, regiões com política de fluxo, orçamento de pilha, memória atômica
++;; e syscalls. `prova.py audit` mostra só o que o humano precisa ler; `prova.py flow` mostra por onde o dado passa.
++(region net-rx)
++(region kmem)
++(deny-flow net-rx @write)                    ; dado cru da rede nunca vai para a saída
++(static received (atomic usize) 0)           ; única memória compartilhada
++(data banner "driver ok\n")
++
++(fn copy_in
++  (params (n usize) (src (slice u8 n net-rx)) (m usize) (dst (slice u8 m kmem)) (len usize))
++  (returns unit)
++  (effects)
++  (stack-budget 128)
++  (pre (<= len n) (<= len m))
++  (post)
++  (body
++    (var i usize 0)
++    (while (< i len)
++      (invariant (<= i len))
++      (decreases (- len i))
++      (store dst i (load src i))
++      (set i (+ i 1)))))
++
++(fn on_packet
++  (params (n usize) (pkt (slice u8 n net-rx)) (m usize) (buf (slice u8 m kmem)))
++  (returns unit)
++  (effects atomic)
++  (stack-budget 256)
++  (pre (<= n m))
++  (post)
++  (body
++    (do (call copy_in n pkt m buf n))
++    (do (atomic_fetch_add received 1 relaxed))))
++
++(fn announce
++  (params)
++  (returns unit)
++  (effects syscall)
++  (stack-budget 128)
++  (pre)
++  (post)
++  (body
++    (let_slice b (data-ref banner))
++    (do (sys_write 1 b (len b)))))
+diff --git a/examples/effects.prova b/examples/effects.prova
+new file mode 100644
+index 0000000..a98f77b
+--- /dev/null
++++ b/examples/effects.prova
+@@ -0,0 +1,31 @@
++;; Efeitos na assinatura: sem (effects ...) a função é PURA. Quem faz syscall declara, e o efeito
++;; propaga: quem chama report também precisa declarar `syscall`. Nada fica escondido atrás de uma chamada.
++(data banner "ok\n")
++
++(fn twice
++  (params (x usize))
++  (returns usize)
++  (effects)
++  (pre (<= x 1000))
++  (post (= result (* 2 x)))
++  (body (return (* x 2))))
++
++(fn report
++  (params)
++  (returns unit)
++  (effects syscall)
++  (pre)
++  (post)
++  (body
++    (let_slice b (data-ref banner))
++    (do (sys_write 1 b (len b)))))
++
++(fn _start
++  (params)
++  (returns unit)
++  (effects syscall)
++  (pre)
++  (post)
++  (body
++    (do (call report))
++    (sys_exit 0)))
+diff --git a/examples/hello.prova b/examples/hello.prova
+index 6a51186..e5100c1 100644
+--- a/examples/hello.prova
++++ b/examples/hello.prova
+@@ -5,6 +5,7 @@
+ (fn _start
+   (params)
+   (returns unit)
++  (effects syscall)
+   (pre)
+   (post)
+   (body
+diff --git a/examples/regions_flow.prova b/examples/regions_flow.prova
+new file mode 100644
+index 0000000..a2a6e74
+--- /dev/null
++++ b/examples/regions_flow.prova
+@@ -0,0 +1,31 @@
++;; Regiões nos tipos + política de fluxo. O pacote entra em net-rx e pode ser COPIADO para a memória do
++;; kernel (kmem), mas a política proíbe que dado de net-rx chegue à saída (@write), nem indiretamente.
++;; `python prova.py flow examples/regions_flow.prova` mostra por onde o dado passa.
++(region net-rx)
++(region kmem)
++(deny-flow net-rx @write)
++
++(fn copy_packet
++  (params (n usize) (src (slice u8 n net-rx))
++          (m usize) (dst (slice u8 m kmem))
++          (len usize))
++  (returns unit)
++  (effects)
++  (pre (<= len n) (<= len m))
++  (post)
++  (body
++    (var i usize 0)
++    (while (< i len)
++      (invariant (<= i len))
++      (decreases (- len i))
++      (store dst i (load src i))
++      (set i (+ i 1)))))
++
++(fn handle
++  (params (n usize) (pkt (slice u8 n net-rx))
++          (m usize) (buf (slice u8 m kmem)))
++  (returns unit)
++  (effects)
++  (pre (<= n m))
++  (post)
++  (body (do (call copy_packet n pkt m buf n))))
+diff --git a/examples/riscv64_start.prova b/examples/riscv64_start.prova
+index 0acc42f..69d4b26 100644
+--- a/examples/riscv64_start.prova
++++ b/examples/riscv64_start.prova
+@@ -8,6 +8,7 @@
+ (fn _start
+   (params)
+   (returns unit)
++  (effects syscall)
+   (pre)
+   (post)
+   (body
+diff --git a/examples/stack_budget.prova b/examples/stack_budget.prova
+new file mode 100644
+index 0000000..e086d92
+--- /dev/null
++++ b/examples/stack_budget.prova
+@@ -0,0 +1,21 @@
++;; Orçamento de pilha provado pelo grafo de chamadas (sem recursão: pior caso finito).
++;; Quadros vêm de um MODELO de custo; para valores reais do backend use --frames (ver provac/stack.py).
++(fn leaf
++  (params (x usize))
++  (returns usize)
++  (effects)
++  (stack-budget 64)
++  (pre (<= x 100))
++  (post (= result (+ x 1)))
++  (body (return (+ x 1))))
++
++(fn mid
++  (params (x usize))
++  (returns usize)
++  (effects)
++  (stack-budget 128)
++  (pre (<= x 100))
++  (post (<= result 101))
++  (body
++    (let y usize (call leaf x))
++    (return y)))
+diff --git a/examples/wip/README.md b/examples/wip/README.md
+index b1f4eee..da332bb 100644
+--- a/examples/wip/README.md
++++ b/examples/wip/README.md
+@@ -2,6 +2,7 @@
+ 
+ Estes arquivos usam sintaxe que a linguagem não implementa (`(atomic u32)`, `u32`, `region`, `let ((..))`,
+ `+wrap`, `bit-and`, `atomic-load`...). Não são aceitos pelo verificador nem pela gramática e ficam fora
+-dos testes. Voltam para `examples/` quando os atômicos existirem de verdade (tipos `u32`, operações
+-`atomic_load/store/fetch_add/cas` com ordem checada, emitidas como ops reais do dialeto `llvm`).
++dos testes. Atualização: os atômicos tipados agora existem (`(static x (atomic usize) 0)`, `atomic_load/store/fetch_add/cas` com ordem
++checada); veja `examples/atomic_counter.prova`. Estes arquivos continuam em `wip/` porque dependem de `u32`, ponteiros e
++algoritmos lock-free, que ainda não existem.
+ `atomic_counter.prova` ainda tem um `)` sobrando na linha 86.
+diff --git a/examples/x86_64_start.prova b/examples/x86_64_start.prova
+index 9a2adec..397e4b6 100644
+--- a/examples/x86_64_start.prova
++++ b/examples/x86_64_start.prova
+@@ -8,6 +8,7 @@
+ (fn _start
+   (params)
+   (returns unit)
++  (effects syscall)
+   (pre)
+   (post)
+   (body
+diff --git a/prova.py b/prova.py
+index e98cc09..71a3590 100644
+--- a/prova.py
++++ b/prova.py
+@@ -13,62 +13,36 @@ import argparse
+ import json
+ import sys
+ 
++from provac import flow as flowmod
+ from provac.audit import audit
+-from provac.boot import TARGETS as BOOT_TARGETS, boot_asm, linker_script
+-from provac.check import Fn, ProvaError, check_call_graph, verify_fn
+-from provac.linear import check_linear
++from provac.boot import boot_asm, linker_script
++from provac.check import ProvaError
+ from provac.mlir import ABI, emit_module
+-from provac.sexp import ParseError, parse
+-from provac.smt import discharge
++from provac.program import build_safe, load_text
++from provac.sexp import ParseError
+ 
+ 
+-def load(path):
+-    forms = parse(open(path, encoding="utf-8").read())
+-    data, fns = {}, []
+-    for f in forms:
+-        if not isinstance(f, list) or not f or not isinstance(f[0], str):
+-            raise ProvaError(f"forma de topo inválida: {f!r} (esperado (fn ...) ou (data ...))")
+-        if f[0] == "data":
+-            if len(f) != 3 or not isinstance(f[1], str):
+-                raise ProvaError("data espera (data nome \"texto\")")
+-            data[f[1]] = f[2].encode("utf-8")
+-        elif f[0] == "fn":
+-            fns.append(Fn(f))
+-        else:
+-            raise ProvaError(f"forma de topo desconhecida: {f[0]}")
+-    return data, fns
++def _read(path):
++    return open(path, encoding="utf-8").read()
+ 
+ 
+-def _analyse(path):
+-    data, fns = load(path)
+-    dlen = {k: len(v) for k, v in data.items()}
+-    results, compiled, sigs = [], [], {}
+-    for fn in fns:
+-        if fn.name in sigs:
+-            raise ProvaError(f"função duplicada: {fn.name}")
+-        sigs[fn.name] = fn
+-    check_call_graph(fns)
+-    for fn in fns:
+-        lin = check_linear(fn, sigs)
+-        cx = verify_fn(fn, dlen, sigs)
+-        compiled.append((fn, cx))
+-        # "goal" (termo da obrigação) vai no JSON para o laço de correção da IA.
+-        obs = [{"label": ob["label"], "goal": str(ob["goal"]), **discharge(ob)} for ob in cx.obs]
+-        results.append({"fn": fn.name, "linear_errors": lin, "obligations": obs})
+-    return data, compiled, results
+-
+-
+-def analyse(path):
+-    try:
+-        return _analyse(path)
+-    except (IndexError, KeyError, TypeError, ValueError, AttributeError) as e:
+-        raise ProvaError("forma malformada (aridade ou estrutura inválida; confira spec/prova.gbnf): "
+-                         f"{type(e).__name__}: {e}")
++build_checked = build_safe
++
++
++def analyse(path, frames=None):
++    """(dados, [(fn, cx)], resultados). Mantido por compatibilidade com os testes."""
++    P = build_checked(_read(path), frames)
++    return P.data, P.compiled, P.results
++
++
++def load(path):
++    data, fns, _ = load_text(_read(path))
++    return data, fns
+ 
+ 
+ def verdict(results, strict):
+     """Retorna (falhas, pendentes)."""
+-    failed = sum(len(r["linear_errors"]) for r in results)
++    failed = sum(len(r["linear_errors"]) + len(r.get("policy_errors", [])) for r in results)
+     pending = 0
+     for r in results:
+         for o in r["obligations"]:
+@@ -85,6 +59,8 @@ def report(results):
+         print(f"fn {r['fn']}")
+         for e in r["linear_errors"]:
+             print(f"  ✘ posse    {e}")
++        for e in r.get("policy_errors", []):
++            print(f"  ✘ política {e}")
+         for o in r["obligations"]:
+             how = f" [{o['how']}]" if o["status"] == "proved" and o.get("how") != "linarith" else ""
+             print(f"  {tags[o['status']]} {o['label']}{how}")
+@@ -96,9 +72,17 @@ def report(results):
+     proved = sum(o["status"] == "proved" for o in obs)
+     pending = sum(o["status"] in ("tested", "unknown") for o in obs)
+     failed = sum(o["status"] == "failed" for o in obs)
+-    posse = sum(len(r["linear_errors"]) for r in results)
++    posse = sum(len(r["linear_errors"]) + len(r.get("policy_errors", [])) for r in results)
+     print(f"\nresumo: {proved} provadas, {pending} não provadas (testadas/incertas), "
+-          f"{failed} falhas de obrigação, {posse} erros de posse")
++          f"{failed} falhas de obrigação, {posse} erros de posse/política")
++
++
++def _stack_table(P):
++    rows = ["função              quadro   pior caso   orçamento   cadeia de chamadas"]
++    for f in P.fns:
++        used, chain = P.worst[f.name]
++        rows.append(f"{f.name:<18} {P.frames[f.name]:>7} {used:>11} {str(f.budget or '—'):>11}   {' → '.join(chain)}")
++    return "\n".join(rows)
+ 
+ 
+ def main():
+@@ -108,7 +92,7 @@ def main():
+         except (AttributeError, ValueError):
+             pass
+     ap = argparse.ArgumentParser()
+-    ap.add_argument("cmd", choices=["check", "emit", "audit", "boot"])
++    ap.add_argument("cmd", choices=["check", "emit", "audit", "boot", "flow", "stack", "fix"])
+     ap.add_argument("file", nargs="?")
+     ap.add_argument("--json", action="store_true")
+     ap.add_argument("--strict", action="store_true")
+@@ -116,6 +100,11 @@ def main():
+     ap.add_argument("--part", default="asm", choices=["asm", "ld"])
+     ap.add_argument("--entry", default="kmain")
+     ap.add_argument("--base", default=None)
++    ap.add_argument("--dot", action="store_true", help="flow: saída Graphviz")
++    ap.add_argument("--frames", default=None, help="stack/check: JSON {função: bytes} medido no backend")
++    ap.add_argument("--model-cmd", default=None, help="fix: comando que lê JSON no stdin e imprime o fonte corrigido")
++    ap.add_argument("--max-iter", type=int, default=5)
++    ap.add_argument("--out", default=None, help="fix: onde gravar o fonte final")
+     a = ap.parse_args()
+     if a.cmd == "boot":
+         base = int(a.base, 0) if a.base else None
+@@ -124,16 +113,36 @@ def main():
+         return 0
+     if not a.file:
+         ap.error("informe o arquivo .prova")
++    frames = json.load(open(a.frames, encoding="utf-8")) if a.frames else None
+     try:
+         if a.cmd == "audit":
+-            _, fns = load(a.file)
+-            print(audit(fns))
++            _, fns, meta = load_text(_read(a.file))
++            print(audit(fns, meta))
+             return 0
+-        data, compiled, results = analyse(a.file)
++        if a.cmd == "fix":
++            from provac.loop import fix
++            if not a.model_cmd:
++                ap.error("fix exige --model-cmd")
++            r = fix(a.file, a.model_cmd, a.max_iter, strict=a.strict)
++            for h in r["history"]:
++                print(f"[iteração {h['iteration']}] {h['outcome']}")
++            if r["ok"] and a.out:
++                open(a.out, "w", encoding="utf-8").write(r["source"])
++            elif r["ok"]:
++                sys.stdout.write(r["source"])
++            return 0 if r["ok"] else 1
++        P = build_checked(_read(a.file), frames)
+     except (ParseError, ProvaError) as e:
+         print(json.dumps({"error": str(e)}, ensure_ascii=False) if a.json else f"erro: {e}",
+               file=sys.stdout if a.json else sys.stderr)
+         return 2
++    if a.cmd == "flow":
++        sys.stdout.write(flowmod.report(P.fns, P.summaries, P.meta["denies"], dot=a.dot) + "\n")
++        return 1 if any(r["fn"] == "(programa)" for r in P.results) else 0
++    if a.cmd == "stack":
++        print(_stack_table(P))
++        return 1 if any(o["status"] == "failed" for r in P.results for o in r["obligations"] if o["label"].startswith("pilha")) else 0
++    results = P.results
+     failed, pending = verdict(results, a.strict)
+     bad = failed > 0 or (a.strict and pending > 0)
+     if a.cmd == "check":
+@@ -147,7 +156,7 @@ def main():
+         print("emissão recusada: " + ("há obrigações falhando" if failed else "--strict exige tudo provado"),
+               file=sys.stderr)
+         return 1
+-    sys.stdout.write(emit_module(compiled, data, a.target))
++    sys.stdout.write(emit_module(P.compiled, P.data, a.target))
+     return 0
+ 
+ 
+diff --git a/provac/audit.py b/provac/audit.py
+index ed71d6b..3489572 100644
+--- a/provac/audit.py
++++ b/provac/audit.py
+@@ -1,10 +1,10 @@
+-"""Relatório de auditoria: o que um humano precisa ler (contratos + efeitos + regiões), sem ler o corpo."""
+-from .check import base, is_slice, show, is_ptr
++"""Relatório de auditoria: o que um humano precisa ler (contratos, efeitos, regiões, orçamento, políticas),
++sem ler o corpo das funções."""
++from .check import show
+ 
+ 
+-def effects(fn):
+-    reads, writes, sysc, calls, drops = set(), set(), set(), set(), set()
+-    regions = set()  # Track regions on pointers
++def accessed(fn):
++    reads, writes, calls, drops = set(), set(), set(), set()
+ 
+     def walk(n):
+         if not isinstance(n, list) or not n:
+@@ -15,24 +15,16 @@ def effects(fn):
+         elif h == "store" and len(n) > 1:
+             writes.add(n[1])
+         elif h == "sys_write":
+-            sysc.add("write")
+             reads.add(n[2])
+-        elif h == "sys_exit":
+-            sysc.add("exit")
+         elif h == "call":
+             calls.add(n[1])
+         elif h == "drop":
+             drops.add(n[1])
+-        # Track ptr regions
+-        if is_ptr(n):
+-            # Extract region from (ptr mmio) etc.
+-            if len(n) >= 3 and isinstance(n[2], str):
+-                regions.add(n[2])
+         for x in n:
+             walk(x)
+ 
+     walk(fn.body)
+-    return reads, writes, sysc, calls, drops, regions
++    return reads, writes, calls, drops
+ 
+ 
+ def sig(fn):
+@@ -40,22 +32,33 @@ def sig(fn):
+     return f"fn {fn.name}({ps})" + ("" if fn.ret == "unit" else f" -> {fn.ret}")
+ 
+ 
+-def audit(fns):
++def audit(fns, meta=None):
+     out = []
++    if meta:
++        if meta["regions"] - {"rodata"}:
++            out.append("regiões   " + ", ".join(sorted(meta["regions"] - {"rodata"})))
++        for n, T in meta["statics"].items():
++            out.append(f"static    {n}: (atomic {T}) = {meta['static_init'][n]}   [única memória compartilhada]")
++        for a, b in meta["denies"]:
++            out.append(f"política  deny-flow {a} {b}")
++        if out:
++            out.append("")
+     for fn in fns:
+-        r, w, s, c, d, regions = effects(fn)
++        r, w, c, d = accessed(fn)
+         out.append(sig(fn))
+         out.append("  exige    " + (" ".join(show(p) for p in fn.pre) or "—"))
+         out.append("  garante  " + (" ".join(show(p) for p in fn.post) or "—"))
+-        eff = []
+-        if r: eff.append("lê " + ",".join(sorted(r)))
+-        if w: eff.append("escreve " + ",".join(sorted(w)))
+-        if s: eff.append("syscall " + ",".join(sorted(s)))
+-        if c: eff.append("chama " + ",".join(sorted(c)))
+-        if d: eff.append("consome " + ",".join(sorted(d)))
+-        if regions: eff.append("regiões " + ",".join(sorted(regions)))
++        out.append("  efeitos  " + (", ".join(sorted(fn.effects)) or "nenhum (pura)"))
++        if fn.budget:
++            out.append(f"  pilha    ≤ {fn.budget} bytes")
++        notes = []
++        if r: notes.append("lê " + ",".join(sorted(r)))
++        if w: notes.append("escreve " + ",".join(sorted(w)))
++        if c: notes.append("chama " + ",".join(sorted(c)))
++        if d: notes.append("consome " + ",".join(sorted(d)))
+         owned = [n for n, T in fn.params if isinstance(T, list) and T[0] == "own"]
+-        if owned: eff.append("recebe posse de " + ",".join(owned))
+-        out.append("  efeitos  " + ("; ".join(eff) or "puro"))
++        if owned: notes.append("recebe posse de " + ",".join(owned))
++        if notes:
++            out.append("  corpo    " + "; ".join(notes))
+         out.append("")
+     return "\n".join(out)
+diff --git a/provac/check.py b/provac/check.py
+index c654c3e..56567fb 100644
+--- a/provac/check.py
++++ b/provac/check.py
+@@ -4,6 +4,7 @@ Cada obrigação é (rótulo, hipóteses, objetivo): hipóteses => objetivo deve
+ Termos: int | str (símbolo) | tupla (op, args...). Contratos usam inteiros matemáticos
+ (sem overflow); o código executável tem overflow checado por obrigação.
+ """
++from . import linarith
+ from .sexp import Str
+ 
+ LO = {"i64": -2**63, "usize": 0, "u8": 0}
+@@ -11,8 +12,15 @@ HI = {"i64": 2**63 - 1, "usize": 2**64 - 1, "u8": 255}
+ SCALARS = ("i64", "usize", "u8")
+ ARITH = ("+", "-", "*")
+ CMP = ("<", "<=", ">", ">=", "=", "!=")
+-PTR_REGIONS = ("mmio", "ram", "rom")
+-ATOMIC_ORDERS = ("acq-rel", "relaxed", "acq-cst", "rel-cst")
++EFFECTS = ("syscall", "atomic")
++ORDERS = ("relaxed", "acquire", "release", "acq_rel", "seq_cst")
++ATOMIC_T = ("i64", "usize")  # tipos permitidos em (static nome (atomic T) init)
++ATOMIC_OPS = ("atomic_load", "atomic_store", "atomic_fetch_add", "atomic_cas")
++LOAD_ORD = ("relaxed", "acquire", "seq_cst")
++STORE_ORD = ("relaxed", "release", "seq_cst")
++FAIL_ORD = ("relaxed", "acquire", "seq_cst")
++# falha do cas não pode ser mais forte que o sucesso
++STRONGER_OK = {"relaxed": ORDERS, "acquire": ("acquire", "acq_rel", "seq_cst"), "seq_cst": ("seq_cst",)}
+ 
+ 
+ class ProvaError(Exception):
+@@ -40,15 +48,12 @@ def is_slice(T):
+     return isinstance(T, list) and T[0] == "slice"
+ 
+ 
+-def is_ptr(T):
+-    T = base(T)
+-    return isinstance(T, list) and T[0] == "own" and len(T) >= 3 and T[1] == "ptr"
+-
+-
+-def is_atomic(T):
+-    T = base(T)
+-    # base returns the inner type string (e.g., "atomic", "ptr", "slice")
+-    return T == "atomic"
++def slice_parts(T):
++    """(comprimento, região|None) de (slice u8 n [região]) ou (own (slice u8 n [região]))."""
++    B = base(T)
++    if len(B) not in (3, 4) or B[1] != "u8":
++        raise ProvaError(f"tipo de fatia inválido: {show(T)} (esperado (slice u8 n [região]))")
++    return B[2], (B[3] if len(B) == 4 else None)
+ 
+ 
+ class Fn:
+@@ -57,6 +62,7 @@ class Fn:
+         self.params, self.ret = [], "unit"
+         self.pre, self.post, self.body = [], [], []
+         self.has_pre = self.has_post = False
++        self.effects, self.budget = set(), None
+         for c in form[2:]:
+             h = c[0]
+             if h == "params":
+@@ -71,6 +77,15 @@ class Fn:
+                 self.has_post = True
+             elif h == "body":
+                 self.body = c[1:]
++            elif h == "effects":
++                bad = [x for x in c[1:] if x not in EFFECTS]
++                if bad:
++                    raise ProvaError(f"{self.name}: efeito desconhecido {bad} (válidos: {list(EFFECTS)})")
++                self.effects |= set(c[1:])
++            elif h == "stack-budget":
++                if len(c) != 2 or not isinstance(c[1], int) or c[1] <= 0:
++                    raise ProvaError(f"{self.name}: (stack-budget N) exige um inteiro positivo de bytes")
++                self.budget = c[1]
+             else:
+                 raise ProvaError(f"{self.name}: cláusula desconhecida '{h}'")
+         if not (self.has_pre and self.has_post):
+@@ -90,10 +105,13 @@ class St:
+ 
+ 
+ class Cx:
+-    def __init__(self, fn, data, sigs=None):
++    def __init__(self, fn, data, sigs=None, meta=None):
+         self.fn, self.data, self.sigs = fn, data, sigs or {}
++        self.meta = meta or {"regions": {"rodata"}, "data_region": {}, "statics": {}}
+         self.types, self.mut, self.slice_names = {}, set(), set()
++        self.slice_region = {}  # nome da fatia -> região declarada (None = sem região)
+         self.obs, self.k = [], 0
++        self.pre_contradictory = False
+ 
+     def fresh(self, base_):
+         self.k += 1
+@@ -158,16 +176,67 @@ def ty(e, cx):
+             raise ProvaError(f"{g.name} espera {len(g.params)} argumentos, recebeu {len(e) - 2}")
+         for (pn, PT), a in zip(g.params, e[2:]):
+             if is_slice(PT):
+-                if a not in cx.slice_names:
++                if not isinstance(a, str) or a not in cx.slice_names:
+                     raise ProvaError(f"{g.name}: argumento '{pn}' exige uma fatia, recebeu {show(a)}")
++                want_r, have_r = slice_parts(PT)[1], cx.slice_region.get(a)
++                if want_r is not None and have_r != want_r:
++                    raise ProvaError(f"{g.name}: região incompatível em '{pn}': exige {want_r}, '{a}' está em "
++                                     f"{have_r or 'nenhuma região'}")
+             else:
+                 ta = ty(a, cx)
+                 if ta not in (None, PT):
+                     raise ProvaError(f"{g.name}: argumento '{pn}' é {PT}, recebeu {ta}; use (cast {PT} ...)")
+         return g.ret
++    if op in ATOMIC_OPS:
++        return atomic_ty(e, cx)
+     raise ProvaError(f"forma desconhecida: {show(e)}")
+ 
+ 
++def static_type(name, cx):
++    if not isinstance(name, str) or name not in cx.meta["statics"]:
++        raise ProvaError(f"'{show(name)}' não é um (static ...) atômico declarado")
++    return cx.meta["statics"][name]
++
++
++def check_order(e, o, allowed, what):
++    if o not in ORDERS:
++        raise ProvaError(f"ordem de memória desconhecida '{show(o)}' em {show(e)} (válidas: {list(ORDERS)})")
++    if o not in allowed:
++        raise ProvaError(f"ordem '{o}' é ilegal em {what}: use uma de {list(allowed)} em {show(e)}")
++
++
++def atomic_vals(e):
++    """Operandos de valor de uma operação atômica (sem a célula e sem as ordens)."""
++    n = {"atomic_load": 0, "atomic_store": 1, "atomic_fetch_add": 1, "atomic_cas": 2}[e[0]]
++    return list(e[2:2 + n])
++
++
++def atomic_ty(e, cx):
++    op = e[0]
++    n_args = {"atomic_load": 3, "atomic_store": 4, "atomic_fetch_add": 4, "atomic_cas": 6}[op]
++    if len(e) != n_args:
++        raise ProvaError(f"aridade inválida em {show(e)}")
++    T = static_type(e[1], cx)
++    for v in atomic_vals(e):
++        tv = ty(v, cx)
++        if tv not in (None, T):
++            raise ProvaError(f"{op} em '{e[1]}' ({T}) recebeu {tv}: {show(e)}; use (cast {T} ...)")
++    if op == "atomic_load":
++        check_order(e, e[2], LOAD_ORD, "atomic_load")
++        return T
++    if op == "atomic_store":
++        check_order(e, e[3], STORE_ORD, "atomic_store")
++        return "unit"
++    if op == "atomic_fetch_add":
++        check_order(e, e[3], ORDERS, "atomic_fetch_add")
++        return T
++    check_order(e, e[4], ORDERS, "atomic_cas (sucesso)")
++    check_order(e, e[5], FAIL_ORD, "atomic_cas (falha)")
++    if e[4] not in STRONGER_OK[e[5]]:
++        raise ProvaError(f"atomic_cas: a ordem de falha '{e[5]}' é mais forte que a de sucesso '{e[4]}': {show(e)}")
++    return T
++
++
+ def slice_len(b, st, cx):
+     if not isinstance(b, str) or b not in cx.slice_names:
+         raise ProvaError(f"{show(b)} não é uma fatia")
+@@ -244,6 +313,18 @@ def ev(e, st, cx, ghost=False, want=None):
+         if ghost:
+             raise ProvaError("chamada em contrato não suportada")
+         return do_call(e, st, cx)
++    if op in ATOMIC_OPS:
++        if ghost:
++            raise ProvaError("operação atômica em contrato não suportada (o valor depende de outras threads)")
++        atomic_ty(e, cx)  # valida aridade, tipos e ordens
++        T = static_type(e[1], cx)
++        for v in atomic_vals(e):
++            arg_range(cx, st, v, ev(v, st, cx, False, T), T)
++        if op == "atomic_store":
++            return 0
++        r = cx.fresh("atm")  # valor lido: qualquer valor do tipo (outras threads podem ter escrito)
++        st.path.append(rng(r, T))
++        return r
+     raise ProvaError(f"forma desconhecida: {show(e)}")
+ 
+ 
+@@ -280,16 +361,8 @@ def do_call(e, st, cx):
+ def declare(cx, x, T, mut):
+     if x in cx.types or x in cx.slice_names or x == "result":
+         raise ProvaError(f"redeclaração de '{x}' (sem sombreamento)")
+-    if T not in SCALARS and not is_ptr(T) and not is_atomic(T):
++    if T not in SCALARS:
+         raise ProvaError(f"tipo inválido para variável: {show(T)}")
+-    if isinstance(T, list) and T[0] == "ptr":
+-        region = T[2]
+-        if region not in PTR_REGIONS:
+-            raise ProvaError(f"região inválida: {region}")
+-    if isinstance(T, list) and T[0] == "atomic":
+-        # T[1] == "atomic", T[2] == scalar type (u32, u64, etc.)
+-        # We don't validate the order here; it's checked at usage sites
+-        pass
+     cx.types[x] = T
+     if mut:
+         cx.mut.add(x)
+@@ -338,6 +411,7 @@ def step(s, st, cx):
+         if src[0] != "data-ref" or src[1] not in cx.data:
+             raise ProvaError(f"let_slice espera (data-ref nome) válido: {show(s)}")
+         cx.slice_names.add(b)
++        cx.slice_region[b] = cx.meta["data_region"].get(src[1], "rodata")
+         st.slices[b] = cx.data[src[1]]
+         return [st]
+     if h == "store":
+@@ -362,6 +436,9 @@ def step(s, st, cx):
+     if h == "do":
+         ev(s[1], st, cx)
+         return [st]
++    if h == "atomic_store":
++        ev(s, st, cx)
++        return [st]
+     if h == "drop":
+         return [st]
+     if h == "return":
+@@ -448,16 +525,19 @@ def run(stmts, sts, cx):
+     return sts
+ 
+ 
+-def verify_fn(fn, data, sigs=None):
+-    cx, st = Cx(fn, data, sigs), St()
++def verify_fn(fn, data, sigs=None, meta=None):
++    cx, st = Cx(fn, data, sigs, meta), St()
+     for n, T in fn.params:
+         if is_slice(T):
+-            _, el, ln = base(T)
+-            if el != "u8" or ln not in st.env:
++            ln, region = slice_parts(T)
++            if ln not in st.env:
+                 raise ProvaError(f"{fn.name}: fatia '{n}' exige comprimento declarado antes: (slice u8 n)")
++            if region is not None and region not in cx.meta["regions"]:
++                raise ProvaError(f"{fn.name}: região '{region}' não declarada (use (region {region}))")
+             cx.slice_names.add(n)
++            cx.slice_region[n] = region
+             st.slices[n] = st.env[ln]
+-        elif T in SCALARS or is_atomic(T):
++        elif T in SCALARS:
+             cx.types[n] = T
+             st.env[n] = n
+             st.path.append(rng(n, T))
+@@ -467,6 +547,7 @@ def verify_fn(fn, data, sigs=None):
+         if ty(p, cx) != "bool":
+             raise ProvaError(f"pre não booleana: {show(p)}")
+         st.path.append(ev(p, st, cx, True))
++    cx.pre_contradictory = linarith.contradictory(st.path)
+     ends = run(fn.body, [st], cx)
+     for e in ends:
+         if e.exited:
+diff --git a/provac/effects.py b/provac/effects.py
+new file mode 100644
+index 0000000..99cc83d
+--- /dev/null
++++ b/provac/effects.py
+@@ -0,0 +1,35 @@
++"""Efeitos nas assinaturas: quem faz syscall ou usa atômicos TEM que declarar. Sem (effects ...) = função pura.
++Um efeito de um chamado propaga para o chamador (não existe efeito escondido atrás de uma chamada)."""
++from .check import ATOMIC_OPS
++
++
++def direct(fn):
++    """(efeitos do próprio corpo, nomes chamados)."""
++    eff, calls = set(), set()
++
++    def walk(n):
++        if isinstance(n, list) and n:
++            h = n[0]
++            if h in ("sys_write", "sys_exit"):
++                eff.add("syscall")
++            elif h in ATOMIC_OPS:
++                eff.add("atomic")
++            elif h == "call" and len(n) > 1 and isinstance(n[1], str):
++                calls.add(n[1])
++            for x in n:
++                walk(x)
++
++    walk(fn.body)
++    return eff, calls
++
++
++def check_effects(fn, sigs):
++    eff, calls = direct(fn)
++    src = {}
++    for e in eff:
++        src.setdefault(e, set()).add("o corpo")
++    for c in calls:
++        for e in sigs[c].effects:
++            src.setdefault(e, set()).add(f"a chamada a {c}")
++    return [f"{fn.name}: efeito '{e}' não declarado (vem de {', '.join(sorted(src[e]))}); "
++            f"declare (effects {e}) no contrato" for e in sorted(src) if e not in fn.effects]
+diff --git a/provac/flow.py b/provac/flow.py
+new file mode 100644
+index 0000000..3a3c141
+--- /dev/null
++++ b/provac/flow.py
+@@ -0,0 +1,199 @@
++"""Fluxo de dados por região (abordagem 3 da ideia original): mostra por onde um dado entra e onde toca a memória,
++e aplica políticas (deny-flow A B). Só fluxo EXPLÍCITO de valores (load → variável → store/syscall/atômico);
++fluxo implícito por controle (if/while) e vazamento por comprimento NÃO são rastreados.
++
++Rótulos: região concreta ("net-rx"), sumidouro "@write", célula "@static:NOME", ou ("p", i) = região/valor do
++parâmetro i (para funções genéricas). Resumos por função são instanciados em cada chamada."""
++from .check import ARITH, ATOMIC_OPS, CMP, atomic_vals, is_slice, slice_parts
++
++SINK = "@write"
++
++
++def topo(fns):
++    by = {f.name: f for f in fns}
++    seen, order = set(), []
++    from .effects import direct
++
++    def go(n):
++        if n in seen:
++            return
++        seen.add(n)
++        for c in sorted(direct(by[n])[1]):
++            go(c)
++        order.append(by[n])
++    for f in fns:
++        go(f.name)
++    return order
++
++
++def _subst(lab, sigma):
++    return set(sigma.get(lab[1], set())) if isinstance(lab, tuple) else {lab}
++
++
++class Summary:
++    def __init__(self, flows, ret):
++        self.flows, self.ret = flows, ret
++
++
++def analyse_fn(fn, sigs, summaries, meta):
++    label, taint = {}, {}
++    for i, (n, T) in enumerate(fn.params):
++        if is_slice(T):
++            r = slice_parts(T)[1]
++            label[n] = r if r else ("p", i)
++        else:
++            taint[n] = {("p", i)}
++
++    def prescan(n):
++        if isinstance(n, list):
++            if n and n[0] == "let_slice":
++                label[n[1]] = meta["data_region"].get(n[2][1], "rodata")
++            for x in n:
++                prescan(x)
++    prescan(fn.body)
++    flows, ret = set(), set()
++
++    def link(srcs, dst):
++        for s in srcs:
++            if s != dst:
++                flows.add((s, dst))
++
++    def atomic(e):
++        cell = "@static:" + e[1]
++        for v in atomic_vals(e):
++            link(tx(v), cell)
++        return set() if e[0] == "atomic_store" else {cell}
++
++    def call(e):
++        g = sigs[e[1]]
++        sigma = {}
++        for i, ((_, PT), a) in enumerate(zip(g.params, e[2:])):
++            sigma[i] = {label[a]} if is_slice(PT) else tx(a)
++        sm = summaries[g.name]
++        for (s, d) in sm.flows:
++            for s2 in _subst(s, sigma):
++                for d2 in _subst(d, sigma):
++                    if s2 != d2:
++                        flows.add((s2, d2))
++        out = set()
++        for lab in sm.ret:
++            out |= _subst(lab, sigma)
++        return out
++
++    def tx(e):
++        if isinstance(e, int):
++            return set()
++        if isinstance(e, str):
++            return set(taint.get(e, set()))
++        op = e[0]
++        if op in ARITH or op in CMP or op in ("and", "or", "not"):
++            return set().union(*[tx(x) for x in e[1:]])
++        if op == "cast":
++            return tx(e[2])
++        if op == "load":
++            return {label[e[1]]} | tx(e[2])
++        if op == "sys_write":
++            link({label[e[2]]}, SINK)
++            return set()
++        if op == "call":
++            return call(e)
++        if op in ATOMIC_OPS:
++            return atomic(e)
++        return set()  # len e afins: sem dado
++
++    def stmts(ss):
++        for s in ss:
++            h = s[0]
++            if h in ("let", "var"):
++                taint.setdefault(s[1], set()).update(tx(s[3]))
++            elif h == "set":
++                taint.setdefault(s[1], set()).update(tx(s[2]))
++            elif h == "store":
++                link(tx(s[3]), label[s[1]])
++            elif h in ("do", "sys_exit"):
++                tx(s[1])
++            elif h == "atomic_store":
++                tx(s)
++            elif h == "return" and len(s) > 1:
++                ret.update(tx(s[1]))
++            elif h == "if":
++                for part in s[2:]:
++                    stmts(part[1:])
++            elif h == "while":
++                stmts([f for f in s[2:] if f[0] not in ("invariant", "decreases")])
++
++    for _ in range(6):  # ponto fixo (variáveis são flow-insensitive: união de todas as atribuições)
++        snap = (frozenset(flows), frozenset(ret), tuple(sorted((k, frozenset(v)) for k, v in taint.items())))
++        stmts(fn.body)
++        if snap == (frozenset(flows), frozenset(ret), tuple(sorted((k, frozenset(v)) for k, v in taint.items()))):
++            break
++    return Summary(flows, ret)
++
++
++def analyse_program(fns, sigs, meta):
++    summaries = {}
++    for f in topo(fns):
++        summaries[f.name] = analyse_fn(f, sigs, summaries, meta)
++    return summaries
++
++
++def concrete_edges(fns, summaries):
++    """(origem, destino) -> primeira função (callee primeiro) em que o fluxo aparece."""
++    edges = {}
++    for f in topo(fns):
++        for (a, b) in sorted(summaries[f.name].flows, key=str):
++            if isinstance(a, str) and isinstance(b, str):
++                edges.setdefault((a, b), f.name)
++    return edges
++
++
++def check_denies(fns, summaries, denies):
++    """Violação = destino alcançável da origem pelo grafo de fluxos de TODO o programa (inclui via memória)."""
++    edges = concrete_edges(fns, summaries)
++    adj = {}
++    for (a, b) in edges:
++        adj.setdefault(a, []).append(b)
++    errs = []
++    for (a, b) in denies:
++        prev, queue = {a: None}, [a]
++        while queue:
++            x = queue.pop(0)
++            for y in adj.get(x, ()):
++                if y not in prev:
++                    prev[y] = x
++                    queue.append(y)
++        if b in prev:
++            path, n = [], b
++            while n is not None:
++                path.append(n)
++                n = prev[n]
++            path.reverse()
++            hops = ", ".join(f"{path[i]} → {path[i + 1]} em {edges[(path[i], path[i + 1])]}" for i in range(len(path) - 1))
++            errs.append(f"fluxo proibido {a} → {b} (deny-flow {a} {b}): {hops}")
++    return errs
++
++
++def report(fns, summaries, denies, dot=False):
++    edges = concrete_edges(fns, summaries)
++    if dot:
++        lines = ["digraph flow {", "  rankdir=LR;"]
++        for (a, b), f in sorted(edges.items()):
++            bad = " color=red" if (a, b) in denies else ""
++            lines.append(f'  "{a}" -> "{b}" [label="{f}"{bad}];')
++        return "\n".join(lines + ["}"]) + "\n"
++    out = ["Fluxos de dados entre regiões (explícitos; sem fluxo por controle):"]
++    for f in topo(fns):
++        conc = sorted((a, b) for (a, b) in summaries[f.name].flows if isinstance(a, str) and isinstance(b, str))
++        poly = sorted((a, b) for (a, b) in summaries[f.name].flows if not (isinstance(a, str) and isinstance(b, str)))
++        if not (conc or poly):
++            continue
++        out.append(f"  fn {f.name}")
++        for a, b in conc:
++            out.append(f"    {a} → {b}")
++        for a, b in poly:
++            fmt = lambda x: f"param#{x[1]}" if isinstance(x, tuple) else x
++            out.append(f"    {fmt(a)} → {fmt(b)}   (genérico: região do parâmetro)")
++    if len(out) == 1:
++        out.append("  (nenhum fluxo entre regiões distintas)")
++    out.append("Políticas: " + (", ".join(f"deny-flow {a} {b}" for a, b in denies) or "nenhuma"))
++    return "\n".join(out)
+diff --git a/provac/linarith.py b/provac/linarith.py
+index edad93b..804a46d 100644
+--- a/provac/linarith.py
++++ b/provac/linarith.py
+@@ -321,3 +321,15 @@ def prove(hyps, goal):
+         return True
+     except Giveup:
+         return None
++
++
++def contradictory(hyps):
++    """True se as hipóteses são PROVADAMENTE insatisfatíveis (então qualquer objetivo seria 'provado' no vazio).
++    Sólido: nunca acusa contradição que não exista; na dúvida devolve False."""
++    try:
++        cases = [[]]
++        for h in hyps:
++            cases = cross(cases, dnf(h))
++        return all(infeasible(c) or infeasible(strengthen(c)) for c in cases)
++    except Giveup:
++        return False
+diff --git a/provac/linear.py b/provac/linear.py
+index d43cebc..116d26b 100644
+--- a/provac/linear.py
++++ b/provac/linear.py
+@@ -1,6 +1,6 @@
+ """Verificação linear de posse: parâmetros (own T) devem ser consumidos (drop) exatamente uma vez
+ em todos os caminhos. Uso depois de drop, drop duplo, drop em laço e vazamento são erros."""
+-from .check import show, ATOMIC_ORDERS, PTR_REGIONS
++from .check import show
+ 
+ 
+ def _names(e, acc):
+@@ -20,7 +20,7 @@ def _exprs(s):
+         return [s[2]]
+     if h == "store":
+         return list(s[1:])
+-    if h in ("return", "assert", "do", "sys_exit"):
++    if h in ("return", "assert", "do", "sys_exit", "atomic_store"):
+         return list(s[1:])
+     if h in ("if", "while"):
+         return [s[1]]
+@@ -88,7 +88,7 @@ def _block(stmts, dropped, owned, errs, fn, sigs):
+ 
+ def check_linear(fn, sigs=None):
+     # Atomics are exempt from linear checking (like ptr regions)
+-    owned = {n for n, T in fn.params if isinstance(T, list) and T[0] == "own" and not (len(T) >= 3 and (T[2] in PTR_REGIONS or T[2] in ATOMIC_ORDERS))}
++    owned = {n for n, T in fn.params if isinstance(T, list) and T[0] == "own"}
+     errs = []
+     dropped, term = _block(fn.body, set(), owned, errs, fn.name, sigs or {})
+     if not term:
+diff --git a/provac/loop.py b/provac/loop.py
+new file mode 100644
+index 0000000..8a37738
+--- /dev/null
++++ b/provac/loop.py
+@@ -0,0 +1,105 @@
++"""Laço fechado com a IA (ideia original): o modelo recebe erros matemáticos precisos e corrige o CORPO das
++funções; o humano só audita os CONTRATOS, e por isso o modelo NÃO pode alterá-los.
++
++Contrato travado = assinatura (params, returns), effects, stack-budget, pre, post de cada função existente,
++mais regiões, políticas deny-flow e células static. Sem esse travamento a IA "corrigiria" o erro
++enfraquecendo o contrato (por exemplo, com uma `pre` contraditória, que prova qualquer coisa).
++
++O modelo é qualquer comando de shell: lê JSON no stdin e imprime o fonte .prova completo no stdout.
++JSON de entrada: {"iteration", "source", "errors": [...], "locked": {...}, "feedback": "..."|null}."""
++import json
++import subprocess
++
++from .check import ProvaError, show
++from .program import build_safe, load_text
++from .sexp import ParseError
++
++
++def lock_of(text):
++    _, fns, meta = load_text(text)
++    funcs = {}
++    for f in fns:
++        funcs[f.name] = {"params": [(n, show(T)) for n, T in f.params], "returns": f.ret,
++                         "effects": sorted(f.effects), "budget": f.budget,
++                         "pre": [show(x) for x in f.pre], "post": [show(x) for x in f.post]}
++    top = {"regions": sorted(meta["regions"]), "denies": sorted(meta["denies"]),
++           "statics": {k: [v, meta["static_init"][k]] for k, v in sorted(meta["statics"].items())}}
++    return funcs, top
++
++
++def diff_lock(orig, cand):
++    """Violações do contrato travado (lista vazia = respeitado). Funções novas (auxiliares) são permitidas."""
++    (of, ot), (cf, ct) = orig, cand
++    out = []
++    for name, spec in of.items():
++        if name not in cf:
++            out.append(f"função '{name}' removida")
++            continue
++        for k, v in spec.items():
++            if cf[name][k] != v:
++                out.append(f"'{name}': {k} era {v} e agora é {cf[name][k]}")
++    if not set(ot["regions"]) <= set(ct["regions"]):
++        out.append("região removida")
++    if ot["denies"] != ct["denies"]:
++        out.append(f"políticas deny-flow alteradas: eram {ot['denies']}, agora {ct['denies']}")
++    if ot["statics"] != ct["statics"]:
++        out.append("células static alteradas")
++    return out
++
++
++def evaluate(text, strict=False):
++    """(ok, erros para o modelo)."""
++    try:
++        P = build_safe(text)
++    except (ParseError, ProvaError) as e:
++        return False, [{"kind": "erro", "msg": str(e)}]
++    errs, pending = [], 0
++    for r in P.results:
++        for m in r["linear_errors"]:
++            errs.append({"kind": "posse", "fn": r["fn"], "msg": m})
++        for m in r["policy_errors"]:
++            errs.append({"kind": "política", "fn": r["fn"], "msg": m})
++        for o in r["obligations"]:
++            if o["status"] == "failed":
++                errs.append({"kind": "obrigação", "fn": r["fn"], "label": o["label"],
++                             "goal": o.get("goal"), "counterexample": o.get("model")})
++            elif o["status"] != "proved":
++                pending += 1
++                if strict:
++                    errs.append({"kind": "não provada", "fn": r["fn"], "label": o["label"], "goal": o.get("goal")})
++    return not errs, errs
++
++
++def fix(path, model_cmd, max_iter=5, strict=False):
++    src = open(path, encoding="utf-8").read()
++    locked = lock_of(src)  # ProvaError aqui = o original já é inválido: o chamador mostra o erro
++    history, feedback = [], None
++    for it in range(max_iter + 1):
++        ok, errs = evaluate(src, strict)
++        if ok:
++            history.append({"iteration": it, "outcome": "verificado: sem falhas"})
++            return {"ok": True, "source": src, "history": history}
++        if it == max_iter:
++            history.append({"iteration": it, "outcome": f"limite de {max_iter} iterações; ainda há {len(errs)} erro(s)"})
++            break
++        payload = {"iteration": it, "source": src, "errors": errs, "locked": locked[0], "feedback": feedback}
++        p = subprocess.run(model_cmd, shell=True, input=json.dumps(payload, ensure_ascii=False),
++                           capture_output=True, text=True, encoding="utf-8", timeout=300)
++        if p.returncode != 0:
++            feedback = f"o comando do modelo falhou (código {p.returncode}): {p.stderr.strip()[:200]}"
++            history.append({"iteration": it, "outcome": feedback})
++            continue
++        cand = p.stdout
++        try:
++            viol = diff_lock(locked, lock_of(cand))
++        except (ParseError, ProvaError, IndexError, KeyError, TypeError, ValueError) as e:
++            feedback = f"fonte inválido: {e}"
++            history.append({"iteration": it, "outcome": f"rejeitado: {feedback}"})
++            continue
++        if viol:
++            feedback = "CONTRATO ALTERADO (proibido): " + "; ".join(viol) + ". Corrija o corpo, não o contrato."
++            history.append({"iteration": it, "outcome": f"rejeitado: {feedback}"})
++            continue
++        src, feedback = cand, None
++        history.append({"iteration": it, "outcome": f"candidato aceito para verificação ({len(errs)} erro(s) antes)"})
++    return {"ok": False, "source": src, "history": history}
+diff --git a/provac/mlir.py b/provac/mlir.py
+index 3d6f0d9..a9119ec 100644
+--- a/provac/mlir.py
++++ b/provac/mlir.py
+@@ -2,15 +2,10 @@
+ aritmética já provada sem overflow recebe flags nsw/nuw."""
+ from .check import ARITH, CMP, ProvaError, base, is_slice, show, ty
+ 
+-MLT = {"i64": "i64", "usize": "i64", "u8": "i8", "ptr": "i8", "atomic": "i8"}
+-
+-
+-def is_ptr_type(T):
+-    return isinstance(T, list) and T[0] == "ptr"
+-
+-
+-def is_atomic_type(T):
+-    return isinstance(T, list) and T[0] == "own" and len(T) >= 3 and T[1] == "atomic"
++MLT = {"i64": "i64", "usize": "i64", "u8": "i8"}
++# Ordens de memória: nomes do dialeto `llvm` (relaxed = monotonic). NÃO validado com mlir-opt.
++MO = {"relaxed": "monotonic", "acquire": "acquire", "release": "release",
++      "acq_rel": "acq_rel", "seq_cst": "seq_cst"}
+ 
+ # Convenção de syscalls Linux por arquitetura: registrador do número, de argumentos, de saída, clobbers.
+ ABI = {
+@@ -25,8 +20,9 @@ TRIPLE = {"x86_64": "x86_64-unknown-linux-gnu", "aarch64": "aarch64-unknown-linu
+ 
+ 
+ class Em:
+-    def __init__(self, fn, cx, target, sigs=None):
++    def __init__(self, fn, cx, target, sigs=None, meta=None):
+         self.fn, self.cx, self.target, self.sigs = fn, cx, target, sigs or {}
++        self.meta = meta or {"statics": {}, "static_init": {}}
+         self.o, self.n, self.term = [], 0, False
+         self.params = {n for n, T in fn.params if not is_slice(T)}
+ 
+@@ -161,8 +157,34 @@ class Em:
+             r = self.t()
+             self.w(f"{r} = {head} -> {MLT[g.ret]}")
+             return r, g.ret
++        if op in ("atomic_load", "atomic_store", "atomic_fetch_add", "atomic_cas"):
++            return self.atomic(e)
+         raise ProvaError(f"emissão: forma desconhecida {show(e)}")
+ 
++    def atomic(self, e):
++        """Atômicos sobre (static ...): ops reais do dialeto llvm, com a ordem escolhida pelo programa."""
++        op, name = e[0], e[1]
++        T = self.meta["statics"][name]
++        p = self.t()
++        self.w(f"{p} = llvm.mlir.addressof @{name} : !llvm.ptr")
++        if op == "atomic_load":
++            r = self.t()
++            self.w(f"{r} = llvm.load {p} atomic {MO[e[2]]} {{alignment = 8 : i64}} : !llvm.ptr -> i64")
++            return r, T
++        v, _ = self.ex(e[2], T)
++        if op == "atomic_store":
++            self.w(f"llvm.store {v}, {p} atomic {MO[e[3]]} {{alignment = 8 : i64}} : i64, !llvm.ptr")
++            return None, "unit"
++        if op == "atomic_fetch_add":
++            r = self.t()
++            self.w(f"{r} = llvm.atomicrmw add {p}, {v} {MO[e[3]]} : !llvm.ptr, i64")
++            return r, T
++        n, _ = self.ex(e[3], T)
++        c, r = self.t(), self.t()
++        self.w(f"{c} = llvm.cmpxchg {p}, {v}, {n} {MO[e[4]]} {MO[e[5]]} : !llvm.ptr, i64")
++        self.w(f"{r} = llvm.extractvalue {c}[0] : !llvm.struct<(i64, i1)>")
++        return r, T
++
+     # ---- instruções ----
+     def block(self, stmts):
+         for s in stmts:
+@@ -190,6 +212,8 @@ class Em:
+             self.w(f"memref.store {v}, %p_{s[1]}[{ix}] : memref<?xi8>")
+         elif h == "do":
+             self.ex(s[1])
++        elif h == "atomic_store":
++            self.ex(s)
+         elif h in ("assert", "drop"):
+             pass  # provado em tempo de compilação: nenhum código em tempo de execução
+         elif h == "return":
+@@ -259,13 +283,16 @@ class Em:
+         return "\n".join(out + self.o + ["  }"])
+ 
+ 
+-def emit_module(fns_cx, data_bytes, target):
++def emit_module(fns_cx, data_bytes, target, meta=None):
++    meta = meta or (fns_cx[0][1].meta if fns_cx else None) or {"statics": {}, "static_init": {}}
+     parts = ["module {"]
++    for name in meta["statics"]:
++        parts.append(f"  llvm.mlir.global internal @{name}({meta['static_init'][name]} : i64) : i64")
+     for name, b in data_bytes.items():
+         vals = ", ".join(str(x - 256 if x > 127 else x) for x in b)
+         parts.append(f'  memref.global "private" constant @{name} : memref<{len(b)}xi8> = dense<[{vals}]>')
+     sigs = {fn.name: fn for fn, _ in fns_cx}
+     for fn, cx in fns_cx:
+-        parts.append(Em(fn, cx, target, sigs).emit())
++        parts.append(Em(fn, cx, target, sigs, meta).emit())
+     parts.append("}")
+     return "\n".join(parts) + "\n"
+diff --git a/provac/program.py b/provac/program.py
+new file mode 100644
+index 0000000..c7a7e7e
+--- /dev/null
++++ b/provac/program.py
+@@ -0,0 +1,106 @@
++"""Programa completo: leitura dos formulários de topo, verificação por função e análises de programa
++(posse, efeitos, fluxo por região, orçamento de pilha)."""
++import re
++
++from .check import ATOMIC_T, HI, LO, Fn, ProvaError, check_call_graph, verify_fn
++from .effects import check_effects
++from .flow import SINK, analyse_program, check_denies
++from .linear import check_linear
++from .sexp import parse
++from .smt import discharge
++from .stack import stack_obligations
++
++NAME = re.compile(r"^[a-z_][a-z0-9_-]*$")
++
++
++class Program:
++    pass
++
++
++def load_text(text):
++    forms = parse(text)
++    data, regions, data_region, statics, static_init, denies, fns = {}, {"rodata"}, {}, {}, {}, [], []
++    for f in forms:
++        if not isinstance(f, list) or not f or not isinstance(f[0], str):
++            raise ProvaError(f"forma de topo inválida: {f!r} (esperado (fn ...), (data ...), (region ...), "
++                             f"(static ...) ou (deny-flow ...))")
++        h = f[0]
++        if h == "data":
++            if len(f) not in (3, 4) or not isinstance(f[1], str):
++                raise ProvaError('data espera (data nome "texto" [região])')
++            data[f[1]] = f[2].encode("utf-8")
++            data_region[f[1]] = f[3] if len(f) == 4 else "rodata"
++        elif h == "region":
++            if len(f) != 2 or not isinstance(f[1], str) or not NAME.match(f[1]):
++                raise ProvaError("region espera (region nome) com nome [a-z_][a-z0-9_-]*")
++            regions.add(f[1])
++        elif h == "static":
++            if len(f) != 4 or not isinstance(f[1], str) or not (isinstance(f[2], list) and len(f[2]) == 2
++                                                                 and f[2][0] == "atomic" and f[2][1] in ATOMIC_T):
++                raise ProvaError(f"static espera (static nome (atomic {'|'.join(ATOMIC_T)}) inicial)")
++            T = f[2][1]
++            if not isinstance(f[3], int) or not LO[T] <= f[3] <= HI[T]:
++                raise ProvaError(f"valor inicial de '{f[1]}' fora da faixa de {T}")
++            statics[f[1]], static_init[f[1]] = T, f[3]
++        elif h == "deny-flow":
++            if len(f) != 3 or not all(isinstance(x, str) for x in f[1:]):
++                raise ProvaError("deny-flow espera (deny-flow ORIGEM DESTINO)")
++            denies.append((f[1], f[2]))
++        elif h == "fn":
++            fns.append(Fn(f))
++        else:
++            raise ProvaError(f"forma de topo desconhecida: {h}")
++    ends = set(regions) | {SINK} | {"@static:" + s for s in statics}
++    for d, r in data_region.items():
++        if r not in regions:
++            raise ProvaError(f"data '{d}': região '{r}' não declarada (use (region {r}))")
++    for a, b in denies:
++        for x in (a, b):
++            if x not in ends:
++                raise ProvaError(f"deny-flow: '{x}' não é região declarada, {SINK} nem @static:NOME")
++    meta = {"regions": regions, "data_region": data_region, "statics": statics,
++            "static_init": static_init, "denies": denies}
++    return data, fns, meta
++
++
++def build(text, frames=None, discharger=discharge):
++    data, fns, meta = load_text(text)
++    dlen = {k: len(v) for k, v in data.items()}
++    sigs = {}
++    for fn in fns:
++        if fn.name in sigs:
++            raise ProvaError(f"função duplicada: {fn.name}")
++        sigs[fn.name] = fn
++    check_call_graph(fns)
++    P = Program()
++    P.data, P.fns, P.sigs, P.meta = data, fns, sigs, meta
++    P.compiled, P.results, cxs = [], [], {}
++    for fn in fns:
++        lin = check_linear(fn, sigs)
++        cx = verify_fn(fn, dlen, sigs, meta)
++        cxs[fn.name] = cx
++        P.compiled.append((fn, cx))
++        obs = [{"label": ob["label"], "goal": str(ob["goal"]), **discharger(ob)} for ob in cx.obs]
++        pol = check_effects(fn, sigs)
++        if cx.pre_contradictory:
++            pol.append(f"{fn.name}: pré-condição contraditória (insatisfatível): qualquer corpo seria 'provado' "
++                       f"no vazio; revise o (pre ...)")
++        P.results.append({"fn": fn.name, "linear_errors": lin, "policy_errors": pol, "obligations": obs})
++    P.summaries = analyse_program(fns, sigs, meta)
++    flow_errs = check_denies(fns, P.summaries, meta["denies"])
++    stack_obs, P.frames, P.worst = stack_obligations(fns, cxs, frames)
++    by = {r["fn"]: r for r in P.results}
++    for o in stack_obs:
++        by[o["fn"]]["obligations"].append({k: v for k, v in o.items() if k != "fn"})
++    if flow_errs:
++        P.results.append({"fn": "(programa)", "linear_errors": [], "policy_errors": flow_errs, "obligations": []})
++    return P
++
++
++def build_safe(text, frames=None, discharger=discharge):
++    """Como build, mas formas malformadas viram ProvaError (nunca um traceback)."""
++    try:
++        return build(text, frames, discharger)
++    except (IndexError, KeyError, TypeError, ValueError, AttributeError) as e:
++        raise ProvaError("forma malformada (aridade ou estrutura inválida; confira spec/prova.gbnf): "
++                         f"{type(e).__name__}: {e}")
+diff --git a/provac/stack.py b/provac/stack.py
+new file mode 100644
+index 0000000..d7d310b
+--- /dev/null
++++ b/provac/stack.py
+@@ -0,0 +1,51 @@
++"""Orçamento de pilha: (stack-budget N) é provado pelo grafo de chamadas (sem recursão, então o pior caso
++é finito): pilha(f) = quadro(f) + max(pilha(chamado)).
++
++ATENÇÃO: o tamanho do quadro vem de um MODELO de custo (16 + 8 por variável + 16 por fatia) enquanto o
++backend não é consultado. Para valores reais passe --frames frames.json (tamanhos medidos no código gerado,
++p.ex. com `llc --stack-size-section` ou `-fstack-usage`); eles substituem o modelo função a função."""
++from .effects import direct
++
++MODEL = "modelo: 16 + 8/variável + 16/fatia"
++
++
++def frame_model(cx):
++    return 16 + 8 * len([x for x in cx.types if x != "result"]) + 16 * len(cx.slice_names)
++
++
++def worst_case(fns, frames):
++    """nome -> (bytes no pior caso, cadeia de chamadas)."""
++    calls = {f.name: sorted(direct(f)[1]) for f in fns}
++    memo = {}
++
++    def go(n):
++        if n not in memo:
++            best = (0, [])
++            for c in calls.get(n, ()):
++                sub = go(c)
++                if sub[0] > best[0]:
++                    best = sub
++            memo[n] = (frames[n] + best[0], [n] + best[1])
++        return memo[n]
++
++    return {f.name: go(f.name) for f in fns}
++
++
++def stack_obligations(fns, cxs, override=None):
++    override = override or {}
++    frames = {f.name: override.get(f.name, frame_model(cxs[f.name])) for f in fns}
++    how = "frames" if override and all(f.name in override for f in fns) else (
++        "frames+modelo" if override else "modelo")
++    wc = worst_case(fns, frames)
++    out = []
++    for f in fns:
++        if f.budget is None:
++            continue
++        used, chain = wc[f.name]
++        ok = used <= f.budget
++        o = {"fn": f.name, "label": f"pilha: {f.name} ≤ {f.budget} bytes (pior caso {used}: {' → '.join(chain)}; {MODEL if how == 'modelo' else how})",
++             "goal": f"{used} <= {f.budget}", "status": "proved" if ok else "failed", "how": how}
++        if not ok:
++            o["model"] = {"pior_caso_bytes": used, "orcamento": f.budget}
++        out.append(o)
++    return out, frames, wc
+diff --git a/scratch/README.md b/scratch/README.md
+index 3b739b6..7772bb0 100644
+--- a/scratch/README.md
++++ b/scratch/README.md
+@@ -2,3 +2,5 @@
+ 
+ Restos do desenvolvimento das Fases 1 e 8. Vários têm caminhos fixos (`D:/PROVA linguagem/...`) e não
+ rodam em outra máquina. Os testes de verdade estão em `tests/`. Pode apagar esta pasta quando quiser.
++
++`ai_correction_loop.py` (simulado, não chamava modelo nenhum) foi substituído por `python prova.py fix` (`provac/loop.py`), que tem laço de verdade e contratos travados.
+diff --git a/ai_correction_loop.py b/scratch/ai_correction_loop.py
+similarity index 100%
+rename from ai_correction_loop.py
+rename to scratch/ai_correction_loop.py
+diff --git a/spec/LANGUAGE.md b/spec/LANGUAGE.md
+index c6f38cc..cb97398 100644
+--- a/spec/LANGUAGE.md
++++ b/spec/LANGUAGE.md
+@@ -1,16 +1,35 @@
+-# Resumo da linguagem (MVP)
++# Resumo da linguagem
+ 
+ ```
+-topo     := (data nome "texto") | (fn nome (params (x T)...) (returns T|unit) (pre e...) (post e...) (body stmt...))
+-tipos    := i64 | usize | u8 | (slice u8 n) | (own (slice u8 n))      ; n = parâmetro declarado antes
+-stmt     := (let x T e) | (var x T e) | (set x e) | (let_slice b (data-ref d)) | (store b i v)
++topo     := (data nome "texto" [região]) | (region nome) | (deny-flow ORIGEM DESTINO)
++          | (static nome (atomic i64|usize) inicial) | fn
++fn       := (fn nome (params (x T)...) (returns T|unit) [(effects syscall|atomic ...)] [(stack-budget N)]
++               (pre e...) (post e...) (body stmt...))               ; ordem canônica; pre e post são obrigatórios
++tipos    := i64 | usize | u8 | (slice u8 n [região]) | (own (slice u8 n [região]))   ; n = parâmetro declarado antes
++stmt     := (let x T e) | (var x T e) | (set x e) | (let_slice b (data-ref d)) | (store b i v) | (drop b)
+           | (if c (then s...) (else s...)) | (while c (invariant e...) (decreases e) s...)
+-          | (assert e) | (do e) | (drop x) | (return [e]) | (sys_exit e)
+-expr     := inteiro | x | (+ - * a b) | (< <= > >= = != a b) | (and/or/not ...) | (cast T e)
+-          | (len b) | (load b i) | (sys_write fd b n) | (call f arg...)
++          | (assert e) | (do e) | (return [e]) | (sys_exit e) | (atomic_store cel v ordem)
++expr     := inteiro | x | (+ - * a b) | (< <= > >= = != a b) | (and/or/not ...) | (cast T e) | (len b) | (load b i)
++          | (sys_write fd b n) | (call f arg...)
++          | (atomic_load cel ordem) | (atomic_fetch_add cel v ordem) | (atomic_cas cel esperado novo sucesso falha)
++ordem    := relaxed | acquire | release | acq_rel | seq_cst
+ ```
+-Regras: contratos usam inteiros matemáticos; código executável tem overflow provado ausente;
+-`result` nomeia o retorno em `post`; todo `while` precisa de `decreases`; sem sombreamento; sem conversão implícita.
+ 
+-Fora da linguagem (por enquanto): `u32`/`i8`, `atomic`, `ptr`/MMIO com regiões, conteúdo de fatias em contratos,
+-alocação dinâmica, recursão. Ver `docs/STATUS.md`. Gramática testada: `spec/prova.gbnf` (GBNF = notação BNF do GGML/llama.cpp).
++## Regras
++- **Contratos** usam inteiros matemáticos; o código executável tem todo overflow provado ausente. `result` nomeia o retorno em `post`.
++  Uma `pre` contraditória é erro (tornaria toda prova vazia).
++- **Laços**: todo `while` exige `invariant` e `decreases` (terminação). Sem recursão.
++- **Tipos estritos**: sem conversão implícita (`cast` explícito), sem sombreamento, índices são `usize`.
++- **Posse**: `(own ...)` é consumido exatamente uma vez (`drop` ou movimento para um `own` de outra função).
++- **Efeitos**: sem `(effects ...)` a função é pura. `syscall` (`sys_write`, `sys_exit`) e `atomic` precisam ser declarados e
++  propagam de chamado para chamador.
++- **Regiões**: fatias podem ter região (`(slice u8 n net-rx)`); passar para um parâmetro com outra região é erro de tipo;
++  `deny-flow A B` proíbe que dado de A chegue a B (também de forma transitiva, por variáveis, chamadas, memória e células
++  atômicas). Destinos especiais: `@write` (saída por syscall) e `@static:NOME` (célula atômica).
++- **Memória compartilhada**: só `static` atômico. Cada operação escolhe a ordem; `load` não pode ser `release`/`acq_rel`,
++  `store` não pode ser `acquire`/`acq_rel`, a ordem de falha do `cas` não pode ser mais forte que a de sucesso.
++  O valor lido de um atômico nunca é assumido estável. `atomic_fetch_add` dá a volta (wrap) por definição.
++- **Pilha**: `(stack-budget N)` é provado pelo grafo de chamadas com quadros de um modelo de custo (ou `--frames`).
++
++Fora da linguagem (por enquanto): `u32`/`i8`, ponteiros/MMIO, conteúdo de fatias em contratos, alocação dinâmica, recursão,
++threads. Ver `docs/STATUS.md`. Gramática testada: `spec/prova.gbnf` (GBNF = notação BNF do GGML/llama.cpp).
+diff --git a/spec/prova.gbnf b/spec/prova.gbnf
+index 17683af..0bf8d22 100644
+--- a/spec/prova.gbnf
++++ b/spec/prova.gbnf
+@@ -1,13 +1,22 @@
+-# Gramática GBNF (llama.cpp / llguidance) para constrained decoding: a IA só emite tokens válidos.
+-root     ::= ws (data | fn)+
+-data     ::= "(" ws "data" ws ident ws string ws ")" ws
+-fn       ::= "(" ws "fn" ws ident ws params ws returns ws pre ws post ws body ws ")" ws
++# Gramática GBNF (GGML/llama.cpp) da Prova, para constrained decoding: a IA só emite tokens válidos.
++# Ordem canônica das cláusulas de fn: params, returns, (effects), (stack-budget), pre, post, body.
++root     ::= ws top+
++top      ::= data | region | deny | static | fn
++data     ::= "(" ws "data" ws ident ws string (ws rident)? ws ")" ws
++region   ::= "(" ws "region" ws rident ws ")" ws
++deny     ::= "(" ws "deny-flow" ws endpoint ws endpoint ws ")" ws
++endpoint ::= rident | "@write" | "@static:" ident
++static   ::= "(" ws "static" ws ident ws "(" ws "atomic" ws ("i64" | "usize") ws ")" ws int ws ")" ws
++fn       ::= "(" ws "fn" ws ident ws params ws returns ws effects? ws budget? ws pre ws post ws body ws ")" ws
+ params   ::= "(" ws "params" (ws param)* ws ")"
+ param    ::= "(" ws ident ws ptype ws ")"
+ ptype    ::= scalar | slice | "(" ws "own" ws slice ws ")"
+-slice    ::= "(" ws "slice" ws "u8" ws ident ws ")"
++slice    ::= "(" ws "slice" ws "u8" ws ident (ws rident)? ws ")"
+ scalar   ::= "i64" | "usize" | "u8"
+ returns  ::= "(" ws "returns" ws (scalar | "unit") ws ")"
++effects  ::= "(" ws "effects" (ws effect)* ws ")"
++effect   ::= "syscall" | "atomic"
++budget   ::= "(" ws "stack-budget" ws int ws ")"
+ pre      ::= "(" ws "pre" (ws expr)* ws ")"
+ post     ::= "(" ws "post" (ws expr)* ws ")"
+ body     ::= "(" ws "body" (ws stmt)* ws ")"
+@@ -16,6 +25,7 @@ stmt     ::= "(" ws ( "let" ws ident ws scalar ws expr
+                     | "set" ws ident ws expr
+                     | "let_slice" ws ident ws "(" ws "data-ref" ws ident ws ")"
+                     | "store" ws ident ws expr ws expr
++                    | "atomic_store" ws ident ws expr ws order
+                     | "assert" ws expr
+                     | "do" ws expr
+                     | "drop" ws ident
+@@ -32,8 +42,14 @@ expr     ::= int | ident | "(" ws op (ws expr)+ ws ")"
+            | "(" ws "load" ws ident ws expr ws ")"
+            | "(" ws "sys_write" ws expr ws ident ws expr ws ")"
+            | "(" ws "call" ws ident (ws expr)* ws ")"
++           | "(" ws "atomic_load" ws ident ws order ws ")"
++           | "(" ws "atomic_fetch_add" ws ident ws expr ws order ws ")"
++           | "(" ws "atomic_cas" ws ident ws expr ws expr ws order ws order ws ")"
++order    ::= "relaxed" | "acquire" | "release" | "acq_rel" | "seq_cst"
+ op       ::= "+" | "-" | "*" | "<=" | ">=" | "<" | ">" | "=" | "!=" | "and" | "or" | "not"
+ ident    ::= [a-z_] [a-z0-9_]*
++rident   ::= [a-z_] [a-z0-9_-]*
+ int      ::= "-"? [0-9]+
+ string   ::= "\"" [^"]* "\""
+-ws       ::= ([ \t\n] | ";;" [^\n]* "\n")*
++# comentário: ";" até o fim da linha (igual ao leitor)
++ws       ::= ([ \t\n] | ";" [^\n]* "\n")*
+diff --git a/tests/_util.py b/tests/_util.py
+new file mode 100644
+index 0000000..23dc303
+--- /dev/null
++++ b/tests/_util.py
+@@ -0,0 +1,41 @@
++"""Utilidades compartilhadas pelos testes."""
++import os, sys
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, ROOT)
++import prova  # noqa: E402
++from provac.check import ProvaError  # noqa: E402
++from provac.sexp import ParseError  # noqa: E402
++
++EX = os.path.join(ROOT, "examples")
++
++
++def example(name):
++    return open(os.path.join(EX, name + ".prova"), encoding="utf-8").read()
++
++
++def build(src, frames=None):
++    return prova.build_checked(src, frames)
++
++
++def problems(P):
++    """Tudo que reprova o programa: obrigações que falharam + erros de posse/política."""
++    out = []
++    for r in P.results:
++        out += r["linear_errors"] + r.get("policy_errors", [])
++        out += [o["label"] for o in r["obligations"] if o["status"] == "failed"]
++    return out
++
++
++def pending(P):
++    return [o["label"] for r in P.results for o in r["obligations"] if o["status"] != "proved"]
++
++
++def src_error(src):
++    """Mensagem de erro (ProvaError/ParseError ou problemas de verificação) ou None se aceitou limpo."""
++    try:
++        P = build(src)
++    except (ProvaError, ParseError) as e:
++        return str(e)
++    ps = problems(P)
++    return "\n".join(ps) if ps else None
+diff --git a/tests/fake_model.py b/tests/fake_model.py
+new file mode 100644
+index 0000000..c23679e
+--- /dev/null
++++ b/tests/fake_model.py
+@@ -0,0 +1,21 @@
++#!/usr/bin/env python3
++"""'Modelo' determinístico para testar o laço de correção (nenhuma IA real aqui).
++Uso: fake_model.py MODO   (lê o JSON do laço no stdin, imprime o fonte .prova completo)
++  honest   : corrige o laço de bad_bounds.
++  cheater  : na 1ª iteração tenta 'corrigir' tornando a pre contraditória (prova tudo!); depois fica honesto.
++  garbage  : na 1ª iteração devolve lixo; depois fica honesto.
++  stubborn : nunca corrige."""
++import json, sys
++
++mode = sys.argv[1] if len(sys.argv) > 1 else "honest"
++req = json.load(sys.stdin)
++src, first = req["source"], req["feedback"] is None and req["iteration"] == 0
++if mode == "stubborn":
++    out = src
++elif mode == "cheater" and first:
++    out = src.replace("(pre (<= len n))", "(pre (<= len n) (< len 0))")
++elif mode == "garbage" and first:
++    out = "((("
++else:
++    out = src.replace("(while (<= i len)", "(while (< i len)")
++sys.stdout.write(out)
+diff --git a/tests/fuzz_linarith.py b/tests/fuzz_linarith.py
+index a09ba61..38130f6 100644
+--- a/tests/fuzz_linarith.py
++++ b/tests/fuzz_linarith.py
+@@ -48,6 +48,30 @@ def fuzz(n=3000, seed=1):
+     return proved, unsound, examples
+ 
+ 
++def fuzz_contradictory(n=2000, seed=1):
++    """Se `contradictory(hyps)` é True, NENHUM modelo do domínio pode satisfazer as hipóteses."""
++    rnd = random.Random(seed)
++
++    def term(d=2):
++        if d == 0 or rnd.random() < 0.3:
++            return rnd.choice(VARS) if rnd.random() < 0.65 else rnd.randint(-4, 4)
++        return (rnd.choice(["+", "-", "*"]), term(d - 1), term(d - 1))
++
++    def atom():
++        return (rnd.choice(["<", "<=", ">", ">=", "=", "!="]), term(), term())
++
++    flagged = unsound = 0
++    for _ in range(n):
++        hyps = [atom() if rnd.random() < 0.8 else ("or", atom(), atom()) for _ in range(rnd.randint(1, 4))]
++        if linarith.contradictory(hyps):
++            flagged += 1
++            for vals in itertools.product(DOM, repeat=3):
++                if all(evalt(h, dict(zip(VARS, vals))) for h in hyps):
++                    unsound += 1
++                    break
++    return flagged, unsound
++
++
+ if __name__ == "__main__":
+     n = int(sys.argv[1]) if len(sys.argv) > 1 else 3000
+     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+diff --git a/tests/test_atomics.py b/tests/test_atomics.py
+new file mode 100644
+index 0000000..2c485e6
+--- /dev/null
++++ b/tests/test_atomics.py
+@@ -0,0 +1,80 @@
++"""Memória concorrente: a única memória compartilhada são (static ... (atomic T)); cada operação escolhe a
++ordem de memória e ordens ilegais são erro de tipo. O valor lido de um atômico nunca é tratado como estável."""
++import re
++from _util import build, example, pending, problems, src_error
++from provac.mlir import emit_module
++
++CELL = "(static c (atomic usize) 0)\n"
++
++
++def fn(body, ret="unit", eff="atomic"):
++    return CELL + f"(fn f (params) (returns {ret}) (effects {eff}) (pre) (post) (body {body}))"
++
++
++def test_atomic_counter_example_is_fully_proved():
++    P = build(example("atomic_counter"))
++    assert not problems(P) and not pending(P)
++
++
++def test_memory_orders_reach_the_mlir_unchanged():
++    P = build(example("atomic_counter"))
++    text = emit_module(P.compiled, P.data, "x86_64")
++    assert "llvm.mlir.global internal @counter(0 : i64) : i64" in text
++    assert re.search(r"llvm\.atomicrmw add .* monotonic", text)
++    assert re.search(r"llvm\.store .* atomic release", text)
++    assert re.search(r"llvm\.load .* atomic acquire", text)
++    assert re.search(r"llvm\.cmpxchg .* acq_rel acquire", text)
++
++
++def test_illegal_orders_are_type_errors():
++    assert "ilegal em atomic_load" in src_error(fn("(return (atomic_load c release))", "usize"))
++    assert "ilegal em atomic_load" in src_error(fn("(return (atomic_load c acq_rel))", "usize"))
++    assert "ilegal em atomic_store" in src_error(fn("(atomic_store c 1 acquire)"))
++    assert "ilegal em atomic_store" in src_error(fn("(atomic_store c 1 acq_rel)"))
++    assert "ilegal em atomic_cas (falha)" in src_error(fn("(return (atomic_cas c 0 1 seq_cst release))", "usize"))
++    assert "ordem de memória desconhecida" in src_error(fn("(return (atomic_load c acq))", "usize"))
++
++
++def test_cas_failure_order_cannot_be_stronger_than_success():
++    assert "mais forte que a de sucesso" in src_error(fn("(return (atomic_cas c 0 1 relaxed acquire))", "usize"))
++    assert "mais forte que a de sucesso" in src_error(fn("(return (atomic_cas c 0 1 acquire seq_cst))", "usize"))
++    for ok in ("relaxed relaxed", "acquire acquire", "acq_rel acquire", "seq_cst seq_cst", "release relaxed"):
++        assert src_error(fn(f"(return (atomic_cas c 0 1 {ok}))", "usize")) is None, ok
++
++
++def test_legal_orders_are_accepted():
++    for o in ("relaxed", "acquire", "seq_cst"):
++        assert src_error(fn(f"(return (atomic_load c {o}))", "usize")) is None
++    for o in ("relaxed", "release", "seq_cst"):
++        assert src_error(fn(f"(atomic_store c 1 {o})")) is None
++    for o in ("relaxed", "acquire", "release", "acq_rel", "seq_cst"):
++        assert src_error(fn(f"(do (atomic_fetch_add c 1 {o}))")) is None
++
++
++def test_atomic_requires_declared_effect_and_declared_cell():
++    assert "efeito 'atomic' não declarado" in src_error(fn("(atomic_store c 1 relaxed)", eff=""))
++    assert "não é um (static ...) atômico declarado" in src_error(
++        "(fn f (params) (returns unit) (effects atomic) (pre) (post) (body (atomic_store nope 1 relaxed)))")
++
++
++def test_static_declarations_are_validated():
++    assert "static espera" in src_error("(static c (atomic u8) 0)\n(fn f (params) (returns unit) (pre) (post) (body))")
++    assert "fora da faixa" in src_error("(static c (atomic usize) -1)\n(fn f (params) (returns unit) (pre) (post) (body))")
++
++
++def test_atomic_values_are_never_assumed_stable():
++    # outra thread pode ter escrito: afirmar que o valor lido é 0 NÃO pode ser provado
++    P = build(fn("(let r usize (atomic_load c acquire)) (assert (= r 0))"))
++    assert any("assert" in p for p in problems(P)), "o verificador assumiu um valor fixo para um atômico"
++    # mas a faixa do tipo vale sempre
++    assert src_error(fn("(let r usize (atomic_load c acquire)) (assert (<= 0 r))")) is None
++
++
++def test_atomic_operations_are_not_allowed_in_contracts():
++    src = CELL + "(fn f (params) (returns unit) (effects atomic) (pre) (post (= (atomic_load c relaxed) 0)) (body))"
++    assert "contrato não suportada" in src_error(src)
++
++
++def test_operand_types_are_strict():
++    assert "recebeu u8" in src_error(CELL + "(fn f (params (x u8)) (returns unit) (effects atomic) (pre) (post) "
++                                     "(body (atomic_store c x relaxed)))")
+diff --git a/tests/test_checker.py b/tests/test_checker.py
+index d44fc72..e8f07bb 100644
+--- a/tests/test_checker.py
++++ b/tests/test_checker.py
+@@ -10,7 +10,8 @@ from provac.sexp import ParseError  # noqa: E402
+ 
+ EX = os.path.join(ROOT, "examples")
+ GOOD = ["sum_to", "copy_bytes", "hello", "ok_own", "calls",
+-        "x86_64_start", "aarch64_start", "riscv64_start", "kmain_min"]
++        "x86_64_start", "aarch64_start", "riscv64_start", "kmain_min",
++        "effects", "regions_flow", "stack_budget", "atomic_counter", "driver_demo"]
+ 
+ 
+ def results(name):
+@@ -21,6 +22,10 @@ def failed(res):
+     return [o["label"] for r in res for o in r["obligations"] if o["status"] == "failed"]
+ 
+ 
++def policy(res):
++    return [e for r in res for e in r.get("policy_errors", [])]
++
++
+ def linear(res):
+     return [e for r in res for e in r["linear_errors"]]
+ 
+@@ -60,6 +65,19 @@ def test_bad_examples_are_rejected_for_the_right_reason():
+         raise AssertionError("recursão deveria ser recusada")
+ 
+ 
++def test_new_bad_examples_are_rejected():
++    assert any("efeito 'syscall' não declarado" in e for e in policy(results("bad_effect")))
++    assert any("fluxo proibido net-rx → @write" in e for e in policy(results("bad_flow")))
++    assert any(l.startswith("pilha: mid") for l in failed(results("bad_stack")))
++    assert any("pré-condição contraditória" in e for e in policy(results("bad_pre")))
++    try:
++        results("bad_atomic_order")
++    except ProvaError as e:
++        assert "ilegal em atomic_load" in str(e)
++    else:
++        raise AssertionError("ordem atômica ilegal deveria ser recusada")
++
++
+ def test_strict_types_and_contracts():
+     assert "incompatíveis" in src_error("(fn f (params (a i64) (b usize)) (returns i64) (pre) (post) (body (return (+ a b))))")
+     assert "terminação" in src_error("(fn f (params (n usize)) (returns unit) (pre) (post) (body (while (< 0 n) (invariant))))")
+diff --git a/tests/test_demo.py b/tests/test_demo.py
+new file mode 100644
+index 0000000..cccaa10
+--- /dev/null
++++ b/tests/test_demo.py
+@@ -0,0 +1,36 @@
++"""Demonstração de ponta a ponta (examples/driver_demo.prova): contratos, posse/tamanhos, efeitos, regiões com
++política, pilha, atômicos e syscalls juntos; e as três visões que o humano usa (audit, flow, stack)."""
++from _util import build, example, pending, problems
++from provac import flow as flowmod
++from provac.audit import audit
++from provac.mlir import emit_module
++from provac.program import load_text
++
++
++def test_demo_is_fully_proved_with_no_policy_errors():
++    P = build(example("driver_demo"))
++    assert not problems(P) and not pending(P)
++
++
++def test_audit_view_has_only_what_a_human_needs_to_read():
++    _, fns, meta = load_text(example("driver_demo"))
++    text = audit(fns, meta)
++    for needle in ("política  deny-flow net-rx @write", "static    received: (atomic usize) = 0",
++                   "exige    (<= n m)", "efeitos  atomic", "efeitos  syscall", "efeitos  nenhum (pura)",
++                   "pilha    ≤ 256 bytes", "corpo    chama copy_in"):
++        assert needle in text, needle
++    assert "invariant" not in text and "while" not in text   # o corpo não precisa ser lido
++
++
++def test_flow_and_stack_views():
++    P = build(example("driver_demo"))
++    assert flowmod.concrete_edges(P.fns, P.summaries) == {
++        ("net-rx", "kmem"): "copy_in", ("rodata", "@write"): "announce"}
++    assert P.worst["on_packet"] == (144, ["on_packet", "copy_in"])   # modelo: 64 + 80
++
++
++def test_demo_emits_on_every_target():
++    P = build(example("driver_demo"))
++    for t in ("x86_64", "aarch64", "riscv64"):
++        text = emit_module(P.compiled, P.data, t)
++        assert "llvm.atomicrmw add" in text and "func.call @copy_in" in text and "llvm.inline_asm" in text
+diff --git a/tests/test_effects.py b/tests/test_effects.py
+new file mode 100644
+index 0000000..682c7fc
+--- /dev/null
++++ b/tests/test_effects.py
+@@ -0,0 +1,43 @@
++"""Efeitos na assinatura: sem (effects ...) a função é pura; o efeito de um chamado propaga ao chamador."""
++from _util import ROOT, build, example, pending, problems, src_error  # noqa: F401
++from provac.audit import audit
++from provac.program import load_text
++
++SYS = '(data m "x")\n'
++NOISY = SYS + '''(fn noisy (params) (returns unit) (effects syscall) (pre) (post)
++  (body (let_slice b (data-ref m)) (do (sys_write 1 b (len b)))))\n'''
++
++
++def test_declared_effects_are_accepted_and_proved():
++    P = build(example("effects"))
++    assert not problems(P) and not pending(P)
++
++
++def test_pure_function_cannot_call_an_effectful_one():
++    e = src_error(example("bad_effect").replace(";; DEVE", ";; deve"))
++    assert "efeito 'syscall' não declarado" in e and "a chamada a noisy" in e
++
++
++def test_missing_clause_means_pure_and_body_syscall_is_rejected():
++    e = src_error(SYS + '(fn f (params) (returns unit) (pre) (post) (body (let_slice b (data-ref m)) (do (sys_write 1 b (len b)))))')
++    assert "efeito 'syscall' não declarado" in e and "o corpo" in e
++
++
++def test_effect_propagates_through_two_levels():
++    src = NOISY + '''(fn mid (params) (returns unit) (effects syscall) (pre) (post) (body (do (call noisy))))
++(fn top (params) (returns unit) (effects) (pre) (post) (body (do (call mid))))'''
++    e = src_error(src)
++    assert "top: efeito 'syscall' não declarado" in e and "a chamada a mid" in e
++    assert "mid: efeito" not in e  # mid declarou corretamente
++
++
++def test_unknown_effect_and_overdeclaration():
++    assert "efeito desconhecido" in src_error("(fn f (params) (returns unit) (effects magic) (pre) (post) (body))")
++    # declarar a mais é permitido (o contrato pode ser mais largo que o corpo)
++    assert src_error("(fn f (params) (returns unit) (effects syscall atomic) (pre) (post) (body))") is None
++
++
++def test_audit_shows_effects():
++    _, fns, meta = load_text(example("effects"))
++    text = audit(fns, meta)
++    assert "efeitos  nenhum (pura)" in text and "efeitos  syscall" in text
+diff --git a/tests/test_emit.py b/tests/test_emit.py
+index 1d182a5..16bc8a9 100644
+--- a/tests/test_emit.py
++++ b/tests/test_emit.py
+@@ -9,7 +9,8 @@ from provac.mlir import emit_module  # noqa: E402
+ 
+ EX = os.path.join(ROOT, "examples")
+ GOOD = ["sum_to", "copy_bytes", "hello", "ok_own", "calls",
+-        "x86_64_start", "aarch64_start", "riscv64_start", "kmain_min"]
++        "x86_64_start", "aarch64_start", "riscv64_start", "kmain_min",
++        "effects", "regions_flow", "stack_budget", "atomic_counter", "driver_demo"]
+ TARGETS = ("x86_64", "aarch64", "riscv64")
+ WRITE_NR = {"x86_64": 1, "aarch64": 64, "riscv64": 64}
+ EXIT_NR = {"x86_64": 60, "aarch64": 93, "riscv64": 93}
+diff --git a/tests/test_fix_loop.py b/tests/test_fix_loop.py
+new file mode 100644
+index 0000000..a32125e
+--- /dev/null
++++ b/tests/test_fix_loop.py
+@@ -0,0 +1,83 @@
++"""Laço fechado com a IA: o modelo corrige o CORPO; os contratos (que o humano audita) são travados.
++Usa um 'modelo' determinístico (tests/fake_model.py): nenhuma IA real, só a mecânica do laço."""
++import os, subprocess, sys, tempfile
++from _util import ROOT, build, example, problems
++from provac.loop import diff_lock, fix, lock_of
++
++FAKE = os.path.join(ROOT, "tests", "fake_model.py")
++cmd = lambda mode: f'"{sys.executable}" "{FAKE}" {mode}'
++
++
++def run_fix(mode, src=None, max_iter=4, strict=False):
++    with tempfile.NamedTemporaryFile("w", suffix=".prova", delete=False, encoding="utf-8") as f:
++        f.write(src or example("bad_bounds"))
++    try:
++        return fix(f.name, cmd(mode), max_iter, strict)
++    finally:
++        os.unlink(f.name)
++
++
++def test_honest_model_fixes_the_body_and_contracts_stay_identical():
++    r = run_fix("honest")
++    assert r["ok"] and "(while (< i len)" in r["source"]
++    assert not problems(build(r["source"]))
++    assert lock_of(r["source"]) == lock_of(example("bad_bounds"))
++
++
++def test_model_cannot_fix_by_weakening_the_contract():
++    r = run_fix("cheater")
++    assert r["ok"]
++    assert any("CONTRATO ALTERADO" in h["outcome"] for h in r["history"]), r["history"]
++    assert "(< len 0)" not in r["source"]            # a trapaça nunca chegou ao resultado
++    assert lock_of(r["source"]) == lock_of(example("bad_bounds"))
++
++
++def test_the_cheat_would_be_accepted_without_the_lock_so_the_lock_matters():
++    cheat = example("bad_bounds").replace("(pre (<= len n))", "(pre (<= len n) (< len 0))")
++    P = build(cheat)  # o corpo continua com o bug, mas todas as obrigações são provadas no vazio...
++    assert not [o for r in P.results for o in r["obligations"] if o["status"] == "failed"]
++    # ...por isso existe a checagem de pré contraditória, que o verificador agora acusa:
++    assert any("pré-condição contraditória" in p for p in problems(P))
++
++
++def test_garbage_output_is_rejected_then_recovers():
++    r = run_fix("garbage")
++    assert r["ok"] and any("fonte inválido" in h["outcome"] for h in r["history"])
++
++
++def test_gives_up_after_max_iterations():
++    r = run_fix("stubborn", max_iter=2)
++    assert not r["ok"] and "limite de 2 iterações" in r["history"][-1]["outcome"]
++
++
++def test_correct_program_never_calls_the_model():
++    r = fix(os.path.join(ROOT, "examples", "sum_to.prova"), f'"{sys.executable}" -c "import sys; sys.exit(9)"', 3)
++    assert r["ok"] and len(r["history"]) == 1
++
++
++def test_lock_allows_new_helpers_but_not_removing_or_changing_contracts():
++    base = lock_of(example("calls"))
++    added = example("calls") + "\n(fn helper (params) (returns unit) (pre) (post) (body))\n"
++    assert diff_lock(base, lock_of(added)) == []
++    removed = example("calls").split("(fn double_clamped")[0]
++    assert any("removida" in v for v in diff_lock(base, lock_of(removed)))
++    changed = example("calls").replace("(post (<= 0 result) (<= result 2000))", "(post (<= 0 result))")
++    assert any("post era" in v for v in diff_lock(base, lock_of(changed)))
++    eff = example("effects").replace("(effects syscall)", "(effects syscall atomic)", 1)
++    assert any("effects" in v for v in diff_lock(lock_of(example("effects")), lock_of(eff)))
++
++
++def test_policies_are_locked_too():
++    base = lock_of(example("regions_flow"))
++    dropped = example("regions_flow").replace("(deny-flow net-rx @write)\n", "")
++    assert any("deny-flow" in v for v in diff_lock(base, lock_of(dropped)))
++
++
++def test_cli_fix_writes_the_result():
++    with tempfile.TemporaryDirectory() as d:
++        src, out = os.path.join(d, "a.prova"), os.path.join(d, "fixed.prova")
++        open(src, "w", encoding="utf-8").write(example("bad_bounds"))
++        r = subprocess.run([sys.executable, os.path.join(ROOT, "prova.py"), "fix", src, "--model-cmd", cmd("honest"),
++                            "--out", out], capture_output=True, text=True, encoding="utf-8")
++        assert r.returncode == 0, r.stdout + r.stderr
++        assert "(while (< i len)" in open(out, encoding="utf-8").read()
+diff --git a/tests/test_flow.py b/tests/test_flow.py
+new file mode 100644
+index 0000000..7bb8d53
+--- /dev/null
++++ b/tests/test_flow.py
+@@ -0,0 +1,80 @@
++"""Regiões nos tipos e fluxo de dados: o relatório mostra por onde o dado passa e (deny-flow A B) o impede,
++inclusive de forma transitiva e através de chamadas."""
++import os, subprocess, sys
++from _util import ROOT, build, example, problems, src_error
++from provac import flow as flowmod
++
++REG = "(region net-rx)\n(region kmem)\n"
++COPY = '''(fn copy (params (n usize) (src (slice u8 n net-rx)) (m usize) (dst (slice u8 m kmem)))
++  (returns unit) (effects) (pre (<= n m)) (post)
++  (body (var i usize 0)
++    (while (< i n) (invariant (<= i n)) (decreases (- n i))
++      (store dst i (load src i)) (set i (+ i 1)))))\n'''
++
++
++def edges(src):
++    P = build(src)
++    return {k: v for k, v in flowmod.concrete_edges(P.fns, P.summaries).items()}
++
++
++def test_allowed_flow_is_reported_and_policy_holds():
++    P = build(example("regions_flow"))
++    assert not problems(P)
++    assert edges(example("regions_flow")) == {("net-rx", "kmem"): "copy_packet"}
++    text = flowmod.report(P.fns, P.summaries, P.meta["denies"])
++    assert "net-rx → kmem" in text and "deny-flow net-rx @write" in text
++
++
++def test_transitive_violation_through_memory_is_caught():
++    e = src_error(example("bad_flow"))
++    assert "fluxo proibido net-rx → @write" in e
++    assert "net-rx → kmem em copy_packet" in e and "kmem → @write em leak" in e
++
++
++def test_direct_violation():
++    src = REG + '(deny-flow net-rx @write)\n' + '''(fn f (params (n usize) (b (slice u8 n net-rx))) (returns unit) (effects syscall)
++  (pre) (post) (body (do (sys_write 1 b n))))'''
++    assert "fluxo proibido net-rx → @write" in src_error(src)
++
++
++def test_region_mismatch_in_call_and_undeclared_region():
++    src = REG + COPY + '''(fn g (params (n usize) (a (slice u8 n kmem)) (m usize) (b (slice u8 m kmem))) (returns unit)
++  (effects) (pre (<= n m)) (post) (body (do (call copy n a m b))))'''
++    assert "região incompatível" in src_error(src)
++    assert "não declarada" in src_error("(fn f (params (n usize) (b (slice u8 n ghost))) (returns unit) (pre) (post) (body))")
++
++
++def test_flow_through_a_scalar_variable():
++    src = REG + '''(fn f (params (n usize) (src (slice u8 n net-rx)) (dst (slice u8 n kmem))) (returns unit)
++  (effects) (pre (< 0 n)) (post)
++  (body (let x u8 (load src 0)) (var y u8 0) (set y x) (store dst 0 y)))'''
++    assert ("net-rx", "kmem") in edges(src)
++
++
++def test_generic_region_parameters_are_instantiated_at_each_call():
++    # mv não declara regiões: o fluxo é "região do param 0 → região do param 1" e só vira concreto na chamada
++    src = REG + '''(fn mv (params (n usize) (a (slice u8 n)) (b (slice u8 n))) (returns unit) (effects) (pre (< 0 n)) (post)
++  (body (store b 0 (load a 0))))
++(fn use (params (n usize) (p (slice u8 n net-rx)) (q (slice u8 n kmem))) (returns unit) (effects) (pre (< 0 n)) (post)
++  (body (do (call mv n p q))))'''
++    assert edges(src) == {("net-rx", "kmem"): "use"}
++    assert "fluxo proibido net-rx → kmem" in src_error(src.replace(REG, REG + "(deny-flow net-rx kmem)\n"))
++
++
++def test_flow_through_atomic_cells():
++    src = REG + "(static box (atomic usize) 0)\n" + '''(fn f (params (n usize) (src (slice u8 n net-rx))) (returns unit) (effects atomic)
++  (pre (< 0 n)) (post) (body (atomic_store box (cast usize (load src 0)) relaxed)))'''
++    assert ("net-rx", "@static:box") in edges(src)
++    assert "fluxo proibido net-rx → @static:box" in src_error(src.replace(REG, REG + "(deny-flow net-rx @static:box)\n"))
++
++
++def test_deny_flow_endpoints_are_validated():
++    assert "não é região declarada" in src_error("(deny-flow ghost @write)\n(fn f (params) (returns unit) (pre) (post) (body))")
++
++
++def test_dot_output_and_cli_exit_codes():
++    run = lambda *a: subprocess.run([sys.executable, os.path.join(ROOT, "prova.py"), *a], capture_output=True,
++                                    text=True, encoding="utf-8")
++    ok = run("flow", os.path.join(ROOT, "examples", "regions_flow.prova"), "--dot")
++    assert ok.returncode == 0 and "digraph flow" in ok.stdout and '"net-rx" -> "kmem"' in ok.stdout
++    assert run("flow", os.path.join(ROOT, "examples", "bad_flow.prova")).returncode == 1
+diff --git a/tests/test_grammar.py b/tests/test_grammar.py
+index be61135..ac957fa 100644
+--- a/tests/test_grammar.py
++++ b/tests/test_grammar.py
+@@ -20,7 +20,14 @@ REJECT = {
+     "instrução inexistente": "(fn f (params) (returns unit) (pre) (post) (body (goto 1)))\n",
+     "identificador maiúsculo": "(fn F (params) (returns unit) (pre) (post) (body))\n",
+     "u32 não existe": "(fn f (params (x u32)) (returns unit) (pre) (post) (body))\n",
+-    "atomic não existe": "(fn f (params (x (atomic u32))) (returns unit) (pre) (post) (body))\n",
++    "atomic não é tipo de parâmetro": "(fn f (params (x (atomic usize))) (returns unit) (pre) (post) (body))\n",
++    "efeito inexistente": "(fn f (params) (returns unit) (effects magic) (pre) (post) (body))\n",
++    "ordem inexistente": "(static c (atomic usize) 0)\n(fn f (params) (returns usize) (pre) (post) (body (return (atomic_load c acq))))\n",
++    "static não atômico": "(static c (plain usize) 0)\n",
++    "static com tipo pequeno": "(static c (atomic u8) 0)\n",
++    "orçamento sem inteiro": "(fn f (params) (returns unit) (stack-budget big) (pre) (post) (body))\n",
++    "região com maiúscula": "(region NetRx)\n",
++    "cláusulas fora de ordem": "(fn f (params) (returns unit) (pre) (effects syscall) (post) (body))\n",
+ }
+ 
+ 
+@@ -31,6 +38,24 @@ def test_grammar_accepts_every_example():
+     assert not rejected, f"a gramática rejeita exemplos válidos: {rejected}"
+ 
+ 
++def test_grammar_accepts_the_new_constructs():
++    ok = [
++        "(region net-rx)\n(region kmem)\n(deny-flow net-rx @write)\n(deny-flow kmem @static:box)\n",
++        "(static box (atomic usize) 0)\n(static neg (atomic i64) -5)\n",
++        '(data msg "x" rodata)\n',
++        "(fn f (params (n usize) (b (slice u8 n net-rx)) (c (own (slice u8 n kmem)))) (returns unit) (effects syscall atomic) "
++        "(stack-budget 256) (pre) (post) (body (atomic_store box 1 release) (do (atomic_fetch_add box 1 acq_rel)) "
++        "(return)))\n",
++        "(fn f (params) (returns usize) (pre) (post) (body (return (atomic_cas box 0 1 acq_rel acquire))))\n",
++    ]
++    for src in ok:
++        assert accepts(RULES, src), src
++
++
++def test_grammar_accepts_both_comment_styles_like_the_reader():
++    assert accepts(RULES, "; um\n;; dois\n" + OK + "(region a) ; fim de linha\n")
++
++
+ def test_grammar_accepts_call_with_several_arguments():
+     assert accepts(RULES, "(fn f (params) (returns i64) (pre) (post) (body (return (call g 1 2 3))))\n")
+ 
+diff --git a/tests/test_linarith_fuzz.py b/tests/test_linarith_fuzz.py
+index ec525d7..75549b6 100644
+--- a/tests/test_linarith_fuzz.py
++++ b/tests/test_linarith_fuzz.py
+@@ -4,7 +4,7 @@ import os, sys
+ HERE = os.path.dirname(os.path.abspath(__file__))
+ sys.path.insert(0, HERE)
+ sys.path.insert(0, os.path.dirname(HERE))
+-from fuzz_linarith import fuzz  # noqa: E402
++from fuzz_linarith import fuzz, fuzz_contradictory  # noqa: E402
+ from provac import linarith  # noqa: E402
+ 
+ 
+@@ -28,3 +28,10 @@ def test_fuzzer_detects_an_unsound_mutant():
+     finally:
+         linarith.norm = original
+     assert unsound > 0, "o fuzzer não detectou um defeito insólito: ele perdeu o poder de detecção"
++
++
++def test_contradiction_detector_never_raises_a_false_alarm():
++    for seed in (1, 2):
++        flagged, unsound = fuzz_contradictory(1200, seed)
++        assert unsound == 0
++        assert flagged > 50, "o detector não está detectando quase nada (teste sem poder)"
+diff --git a/tests/test_stack.py b/tests/test_stack.py
+new file mode 100644
+index 0000000..cdb0d4a
+--- /dev/null
++++ b/tests/test_stack.py
+@@ -0,0 +1,38 @@
++"""Orçamento de pilha pelo grafo de chamadas: modelo de custo por padrão; --frames usa valores do backend."""
++import json, os, subprocess, sys
++from _util import ROOT, build, example, pending, problems
++
++
++def test_budget_is_proved_with_worst_case_chain():
++    P = build(example("stack_budget"))
++    assert not problems(P) and not pending(P)
++    assert P.worst["mid"] == (56, ["mid", "leaf"])     # 32 (mid) + 24 (leaf), no modelo
++    assert P.worst["leaf"] == (24, ["leaf"])
++
++
++def test_budget_violation_is_reported_with_numbers():
++    P = build(example("bad_stack"))
++    bad = [o for r in P.results for o in r["obligations"] if o["status"] == "failed"]
++    assert len(bad) == 1 and bad[0]["model"] == {"pior_caso_bytes": 56, "orcamento": 40}
++
++
++def test_backend_frames_override_the_model():
++    src = example("stack_budget")
++    assert not problems(build(src))
++    P = build(src, frames={"leaf": 1000})              # backend mediu 1000 bytes para leaf
++    assert any("pilha: leaf" in p for p in problems(P)), problems(P)
++    assert any("pilha: mid" in p for p in problems(P))  # e o custo propaga para quem chama
++
++
++def test_invalid_budget_clause():
++    from _util import src_error
++    assert "inteiro positivo" in src_error("(fn f (params) (returns unit) (stack-budget -3) (pre) (post) (body))")
++
++
++def test_cli_stack_table_and_exit_code():
++    run = lambda name: subprocess.run([sys.executable, os.path.join(ROOT, "prova.py"), "stack",
++                                       os.path.join(ROOT, "examples", name + ".prova")],
++                                      capture_output=True, text=True, encoding="utf-8")
++    ok, bad = run("stack_budget"), run("bad_stack")
++    assert ok.returncode == 0 and "mid → leaf" in ok.stdout
++    assert bad.returncode == 1
