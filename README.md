@@ -37,6 +37,7 @@ O humano audita só os contratos (`prova.py audit`); a IA corrige o corpo e **n�
 | Registradores como recursos lineares, alocador dinâmico, verificação de protocolos multi-thread | ❌ não implementado | `docs/STATUS.md` |
 
 Mapa completo da ideia original: [`docs/STATUS.md`](docs/STATUS.md).
+Próxima fase de desenvolvimento: [`docs/ROADMAP.md`](docs/ROADMAP.md) (Fase 9: certificados Lean 4 de ponta a ponta).
 
 ## Uso
 ```

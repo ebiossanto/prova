@@ -3,6 +3,8 @@
 Substitui os documentos de status antigos (`docs/archive/`), que se contradiziam.
 Legenda: ✅ funciona e tem teste · ⚠️ parcial ou não validado no ambiente-alvo · ❌ não existe.
 
+> Próximas fases (9 a 12) definidas em [`ROADMAP.md`](ROADMAP.md).
+
 ## Camada 1: semântica (contratos, tipos, provas)
 | Item | Estado | Notas |
 |---|---|---|
