@@ -1,7 +1,7 @@
 # Roadmap: fases de desenvolvimento
 
 Legenda: ✅ concluído (detalhes em [`STATUS.md`](STATUS.md)) · 🚧 fase ativa · ⏸ bloqueada pelo ambiente.
-Estado em 17/nov/2026.
+Estado em 19/nov/2026.
 
 ## Fase 9 (próxima): certificados Lean 4 de ponta a ponta — base de confiança mínima
 
@@ -51,14 +51,28 @@ protocolos multi-thread.
 
 ---
 
-## Fase 10 (⏸ bloqueada): validação da toolchain MLIR/LLVM
+## Fase 10 (🚧 parcial): validação da toolchain MLIR/LLVM
 
 Validar a emissão real: `mlir-opt` → `mlir-translate` → `llc` → `ld.lld` → ELF, para os 3 alvos,
 e medir os quadros de pilha reais contra o modelo de custo (`--frames`).
-**Bloqueio:** nenhum de `clang`, `llc`, `mlir-opt`, `ld.lld`, `qemu` está instalado neste
-ambiente Windows e não há `winget`/gestor de pacotes para instalá-los. Requer o usuário instalar
-LLVM (ex.: `https://llvm.org/builds/` ou MSYS2 `pacman -S mingw-w64-x86_64-llvm`) ou rodar em
-Linux. Quando disponível: `scripts/build.sh examples/x86_64_start.prova x86_64`.
+
+**Feito em 19/nov/2026 — o bloqueio foi removido instalando a toolchain sem admin:**
+LLVM oficial 23.1.6 extraído em `D:\clang+llvm-*` (`opt`, `llc`, `clang`, `ld.lld`) + MSYS2
+portátil em `D:\msys64` (`mlir-opt`, `mlir-translate`, 23.1.5). O instalador/MSI oficial do LLVM
+**não** traz as ferramentas MLIR; o `ld.lld` do MSYS2 rejeita ELF válido (bug do pacote), por
+isso o link usa o oficial. Evidência:
+
+- **48/48 pipelines** (16 exemplos × 3 alvos) emit → … → ELF: `scratch/validate_toolchain.py`;
+- teste permanente `tests/test_mlir_toolchain.py`: 6 exemplos × 3 alvos + kernel (boot + linker
+  script) dos 3 alvos; **skip** se as ferramentas faltarem — e no CI Linux elas são instaladas
+  (`mlir-*-tools`, `llvm-*`, `lld-*`, `clang-*` em `.github/workflows/ci.yml`);
+- `scripts/build.sh` corrigido e testado de ponta a ponta; **3 bugs reais** encontrados no caminho
+  (`-nostdlib` passado direto ao `ld.lld`, que não aceita; riscv64 sem `-mattr` derrubava átomicos
+  em `__atomic_*`/libatomic e quebrava a ABI lp64d no link do kernel; `python3` não existe no Windows).
+
+**Pendente nesta fase:** medir os quadros de pilha reais do código gerado e alimentar `--frames`
+(hoje só o modelo de custo); executar os ELFs produzidos (o alvo é Linux e este Windows não tem
+`qemu-user` nem WSL).
 
 ## Fase 11 (❌ não iniciada): registradores como recursos lineares
 

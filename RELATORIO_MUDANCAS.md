@@ -101,21 +101,21 @@ prova-corrigido/
 | | Overflow, limites, invariantes, terminação | ✅ Sim |
 | | Tipos dependentes (comprimento no tipo) | ✅ Sim |
 | | Posse linear de fatias | ✅ Sim |
-| | Conteúdo de fatias em contratos | ❌ Não (precisa arrays/quantificadores) |
-| | Certificados Lean 4 | ❌ Não (esboço) |
+| | Conteúdo de fatias em contratos | ✅ Sim (McCarthy + Z3; `sort_perm.prova`) |
+| | Certificados Lean 4 | ⚠️ Lemas compilam (`SortPerm.lean`); exportação automática é a Fase 9 |
 | **Sintaxe** | S-expressions sem açúcar | ✅ Sim |
 | | Gramática GBNF (constrained decoding) | ✅ Sim |
 | | IA loop fechada, contratos travados | ✅ Sim (mecânica) |
 | **Hardware** | Efeitos na assinatura | ✅ Sim |
 | | Regiões + fluxo de dados | ✅ Sim (só fluxo explícito) |
 | | Orçamento de pilha | ⚠️ Parcial (modelo de custo) |
-| | Memória concorrente (atomics) | ⚠️ Parcial (tipos OK, MLIR não validado) |
+| | Memória concorrente (atomics) | ✅ Sim (tipos, ordens e MLIR validados) |
 | | Execução (interpretador) | ✅ Sim |
 | | Programas de teste executáveis | ✅ Sim |
-| | Compilação nativa (MLIR→LLVM→ELF) | ❌ Não validado |
+| | Compilação nativa (MLIR→LLVM→ELF) | ✅ Sim (validada em 19/nov, `test_mlir_toolchain.py`) |
 | | Boot x86-64 freestanding | ✅ Sim (montado, ligado, executado) |
-| | Boot AArch64/RISC-V | ⚠️ Parcial (estrutura) |
-| | Z3 opcional | ⚠️ Caminho existe, não testado |
+| | Boot AArch64/RISC-V | ⚠️ Parcial (ligado em ELF; não executado — sem qemu-user) |
+| | Z3 opcional | ✅ Sim (`z3-solver` 5.4.1 integrado e testado) |
 
 ---
 
@@ -156,14 +156,13 @@ prova-corrigido/
 
 | Item | Motivo |
 |------|--------|
-| Conteúdo de fatias em contratos | Precisa de teoria de arrays/quantificadores (Z3) |
-| Certificados Lean 4 | `lean/` é esboço nunca compilado |
-| Ponteiros / MMIO | Não há ponteiros na linguagem ainda |
+| Certificados Lean 4 automáticos (`prova.py cert`) | Fase 9 do roadmap; hoje só há lemas escritos à mão em `lean/Prova/` (compilam) |
+| Ponteiros crus / aritmética de ponteiros | MMIO tipado existe (`mmio_read`/`mmio_write`), mas não há ponteiros na linguagem |
 | Alocador dinâmico verificado | Só posse linear de fatias recebidas |
-| Registradores como recursos lineares | Não implementado |
+| Registradores como recursos lineares | Não implementado (Fase 11) |
 | Threads / lock-free verification | Atomics garantem tipos/ordens, não correção de algoritmos |
-| Compilação MLIR→LLVM→ELF | Não validado (falta LLVM/MLIR no ambiente) |
-| MLIR atômico (`llvm.load/store atomic`) | Sintaxe não validada |
+| Medição de quadros de pilha reais (`--frames`) | Só existe o modelo de custo; a toolchain já está instalada (resto da Fase 10) |
+| Execução dos ELFs gerados neste Windows | Alvo é Linux; sem `qemu-user`/WSL neste ambiente (validação para no ELF checado) |
 
 ---
 
@@ -183,11 +182,33 @@ prova-corrigido/
 
 ---
 
+## 🔄 Fase 10 — Toolchain MLIR/LLVM instalada e validada (19/nov/2026)
+
+O bloqueio da Fase 10 ("nenhuma ferramenta LLVM neste ambiente") foi removido **sem privilégios de
+administrador**:
+
+1. **Instalação portátil**
+   - LLVM oficial 23.1.6 (`clang+llvm-…tar.zst`, 276 MB) extraído em `D:\clang+llvm-23.1.6-x86_64-pc-windows-msvc`: `opt`, `llc`, `clang`, `ld.lld` — **sem** `mlir-opt` (o instalador/MSI oficial não traz as ferramentas MLIR).
+   - MSYS2 portátil extraído em `D:\msys64` + `pacman`: `mingw-w64-clang-x86_64-mlir` 23.1.5 (`mlir-opt`, `mlir-translate`), `llvm`, `lld`, `clang` (o pacote `qemu` só traz modo system, sem user-mode).
+2. **Validação real: 48/48** — `scratch/validate_toolchain.py` varre 16 exemplos × 3 alvos (x86_64, aarch64, riscv64) por `emit → mlir-opt → mlir-translate → opt → llc → ld.lld`, conferindo a mágica ELF no objeto e no binário.
+3. **3 bugs reais encontrados e corrigidos em `scripts/build.sh`**
+   - `-nostdlib` é flag do driver `clang`, não do `ld.lld` — o link falhava;
+   - riscv64 sem `-mattr` baixava átomicos para `__atomic_*`/libatomic e o kernel não ligava por ABI de ponto flutuante diferente da do stub de boot → `-mattr=+m,+a,+f,+d,+c` (rv64gc, a mesma ABI lp64d do clang);
+   - `python3` não existe no Windows → fallback `python3 || python`.
+   - (o `ld.lld` do MSYS2 23.1.5 rejeita até ELF válido — bug do pacote; o link usa o oficial 23.1.6.)
+4. **Teste permanente** `tests/test_mlir_toolchain.py`: 6 exemplos × 3 alvos + kernel (stub de boot + linker script) dos 3 alvos, com **skip** se as ferramentas faltarem. Suíte local: **105 testes passando, 0 falhas, 1 skip**.
+5. **CI**: `.github/workflows/ci.yml` instala `mlir-*-tools`, `llvm-*`, `lld-*` e `clang-*` no job Linux (versão detectada automaticamente), então a validação roda também no GitHub.
+
+**Pendências honestas:** os ELFs gerados não são *executados* neste Windows (sem `qemu-user`/WSL);
+os quadros de pilha reais ainda não foram medidos para alimentar `--frames` (resto da Fase 10).
+
+---
+
 ## 📌 Conclusão
 
 Os patches representam um **salto significativo** em relação ao estado anterior:
 
 - **De:** Verificador básico + exemplos simples
-- **Para:** Sistema completo com semântica (contratos, tipos, provas), sintaxe para IA (GBNF), recursos de hardware (efeitos, regiões, pilha, atomics, syscalls, boot), execução validada e 97 testes automatizados
+- **Para:** Sistema completo com semântica (contratos, tipos, provas), sintaxe para IA (GBNF), recursos de hardware (efeitos, regiões, pilha, atomics, syscalls, boot), execução validada, compilação MLIR→LLVM→ELF validada nos 3 alvos e 105 testes automatizados
 
 A **ideia original** está **majoritariamente implementada** (21/25 itens mapeados), com limitações documentadas e honestas. O patch 0003 é a versão mais completa e pronta para desenvolvimento contínuo.

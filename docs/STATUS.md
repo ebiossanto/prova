@@ -1,4 +1,4 @@
-# Estado real (16/nov/2026): a ideia original, item por item
+# Estado real (19/nov/2026): a ideia original, item por item
 
 Substitui os documentos de status antigos (`docs/archive/`), que se contradiziam.
 Legenda: ✅ funciona e tem teste · ⚠️ parcial ou não validado no ambiente-alvo · ❌ não existe.
@@ -28,14 +28,14 @@ Legenda: ✅ funciona e tem teste · ⚠️ parcial ou não validado no ambiente
 |---|---|---|
 | Efeitos na assinatura (`syscall`, `atomic`, `mmio`) com propagação | ✅ | `test_effects.py`, `test_next_steps.py` |
 | Regiões nos tipos, relatório de fluxo (`flow`, `--dot`), `deny-flow` transitivo | ✅ | inclui `@write`, `@static:NOME` e `@mmio:NOME` (só fluxo explícito de valores) |
-| Orçamento de pilha pelo grafo de chamadas | ⚠️ | quadros de um modelo de custo; `--frames` aceita medidas do backend (não testado contra LLVM real) |
-| Memória concorrente: `static` atômico, ordens tipadas, emissão `llvm.load/store atomic`, `atomicrmw`, `cmpxchg`, Ring Buffer SPSC (`ring_buffer.prova`) | ✅/⚠️ | tipos, ordens, `add_wrap`/`sub_wrap`/`bit_and` e execução testados (`test_atomics.py`, `test_next_steps.py`); sintaxe MLIR **não validada** com `mlir-opt` |
-| MMIO tipado com regiões (`(mmio nome addr T regiao)`, `mmio_read`, `mmio_write`, efeito `mmio`, emissão `llvm.load/store volatile`) | ✅/⚠️ | verificação de tipos/efeitos/fluxo e execução no interpretador testadas (`test_next_steps.py`); MLIR não validado com `mlir-opt` |
+| Orçamento de pilha pelo grafo de chamadas | ⚠️ | quadros de um modelo de custo; `--frames` aceita medidas do backend — medição real é a pendência da Fase 10 (`ROADMAP.md`), agora que a toolchain existe |
+| Memória concorrente: `static` atômico, ordens tipadas, emissão `llvm.load/store atomic`, `atomicrmw`, `cmpxchg`, Ring Buffer SPSC (`ring_buffer.prova`) | ✅ | tipos, ordens, `add_wrap`/`sub_wrap`/`bit_and` e execução testados (`test_atomics.py`, `test_next_steps.py`); MLIR validado com `mlir-opt`/`llc` reais nos 3 alvos (`test_mlir_toolchain.py`) |
+| MMIO tipado com regiões (`(mmio nome addr T regiao)`, `mmio_read`, `mmio_write`, efeito `mmio`, emissão `llvm.load/store volatile`) | ✅ | verificação de tipos/efeitos/fluxo e execução no interpretador testadas (`test_next_steps.py`); MLIR validado com `mlir-opt` (`driver_demo` nos 3 alvos, `test_mlir_toolchain.py`) |
 | Execução: interpretador de referência (`run`) com checagem de contratos e teste diferencial | ✅ | confere `load`, `old` e `forall` em contratos; não é código nativo |
 | Programas de teste executáveis (`selftest`, `packet_inspector`, `ring_buffer`) | ✅ | provados estaticamente e executados |
-| Compilação até binário nativo (MLIR → LLVM → ELF) | ❌ não validado | exige LLVM/MLIR, ausente no desenvolvimento |
-| Syscalls por arquitetura (números e registradores) | ✅ texto | `write` e `exit`; MLIR nunca passou por `mlir-opt`/`llc` |
+| Compilação até binário nativo (MLIR → LLVM → ELF) | ✅ | `mlir-opt → mlir-translate → opt → llc → ld.lld` validado nos 3 alvos (`test_mlir_toolchain.py`: 6 exemplos × 3 alvos + kernels; varredura completa 48/48 em `scratch/validate_toolchain.py`); gerado, não executado neste Windows (sem `qemu-user`) |
+| Syscalls por arquitetura (números e registradores) | ✅ | `write` e `exit`; tradução validada por `mlir-opt`/`llc` reais (`x86_64_start` nos 3 alvos, `test_mlir_toolchain.py`) |
 | Registradores da CPU como recursos lineares | ❌ | |
 | Gerenciamento manual de memória (alocador dinâmico verificado) | ❌ | só posse linear de fatias recebidas |
 | Boot freestanding x86-64 (pilha, `.bss`, linker script) | ✅ | montado, ligado e executado (em Linux x86-64) |
-| Boot AArch64 e RISC-V | ⚠️ | gerados; só estrutura verificada |
+| Boot AArch64 e RISC-V | ⚠️ | stub + linker script montados e ligados em ELF real para os 3 alvos (`test_mlir_toolchain.py`); não executados (sem `qemu-user`/WSL neste Windows) |

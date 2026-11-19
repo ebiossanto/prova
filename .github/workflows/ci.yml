@@ -13,5 +13,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: Toolchain MLIR/LLVM (validação real da emissão, Fase 10)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          V=$(apt-cache search --names-only '^mlir-[0-9]+-tools$' | grep -oE '[0-9]+' | sort -n | tail -1)
+          echo "LLVM/MLIR da distribuição: $V"
+          sudo apt-get install -y --no-install-recommends mlir-$V-tools llvm-$V lld-$V clang-$V
       - name: Testes (o runner sai com código != 0 se algum teste falhar)
         run: python tests/run_tests.py

@@ -25,14 +25,14 @@ O humano audita só os contratos (`prova.py audit`); a IA corrige o corpo e **n�
 | **Efeitos nas assinaturas** (`syscall`, `atomic`, `mmio`), propagação por chamadas | ✅ | `test_effects.py`, `test_next_steps.py` |
 | **Regiões, MMIO e fluxo de dados** (`flow`, `--dot`, `deny-flow` transitivo para regiões, `@write`, `@static:NOME`, `@mmio:NOME`) | ✅ só fluxo explícito de valores | `test_flow.py`, `test_next_steps.py` |
 | **Orçamento de pilha** pelo grafo de chamadas | ⚠️ quadros de um *modelo de custo*; valores reais via `--frames` | `test_stack.py` |
-| **Memória concorrente e Ring Buffer SPSC**: `static` atômico, ordens tipadas, `ring_buffer.prova`, emissão `llvm` | ✅/⚠️ checagem e execução testadas; MLIR não validado | `test_atomics.py`, `test_next_steps.py` |
+| **Memória concorrente e Ring Buffer SPSC**: `static` atômico, ordens tipadas, `ring_buffer.prova`, emissão `llvm` | ✅ checagem, execução e MLIR real validados | `test_atomics.py`, `test_next_steps.py`, `test_mlir_toolchain.py` |
 | **Laço fechado com a IA** com contratos travados (`prova.py fix`) | ✅ mecânica, com modelo de teste determinístico; plugue seu modelo via `--model-cmd` | `test_fix_loop.py`, `test_next_steps.py` |
 | Provador interno (Fourier–Motzkin + McCormick + McCarthy/Ackermann arrays + Skolemização), sem Z3 | ✅ sólido por fuzzing | `test_linarith_fuzz.py`, `test_next_steps.py` |
 | Gramática GBNF para constrained decoding | ✅ testada com mini-interpretador | `test_grammar.py` |
 | **Execução** (`prova.py run`): interpretador de referência que confere pre/post/invariantes/variante/limites/overflow/arrays em tempo de execução; teste diferencial contra o verificador | ✅ (não é código nativo) | `test_run.py`, `test_packet_inspector.py`, `test_next_steps.py` |
-| Emissão MLIR para 3 alvos, syscalls por arquitetura | ⚠️ texto gerado e estrutura testada; **nunca passou por `mlir-opt`/`llc`** | `test_emit.py` |
+| Emissão MLIR para 3 alvos → `mlir-opt` → `llc` → **ELF** (syscalls incluídas) | ✅ validado com toolchain real (LLVM/MLIR 23.1.5); `scripts/build.sh` gera binário e kernel | `test_emit.py`, `test_mlir_toolchain.py` |
 | Boot bare-metal x86-64 (pilha, `.bss`, linker script) | ✅ montado, ligado e **executado** | `test_boot.py` |
-| Boot AArch64 e RISC-V | ⚠️ só estrutura (sem toolchain/QEMU) | `test_boot.py` |
+| Boot AArch64 e RISC-V | ⚠️ montado e ligado em ELF real (3 alvos); não executado (sem QEMU-user) | `test_boot.py`, `test_mlir_toolchain.py` |
 | Z3 integrado (`z3-solver` 5.4.1 em processo + CLI) e certificados Lean 4 (`v4.36.0-rc2`) | ✅ testados na suíte | `test_next_steps.py` |
 | Registradores como recursos lineares, alocador dinâmico, verificação de protocolos multi-thread | ❌ não implementado | `docs/STATUS.md` |
 
@@ -49,7 +49,7 @@ python prova.py run    examples/packet_inspector.prova  # executa (interpretador
 python prova.py emit   examples/hello.prova --target aarch64
 python prova.py fix    prog.prova --model-cmd "SEU_COMANDO" [--max-iter 5] [--out novo.prova]
 python prova.py boot   --target riscv64 --part asm      # stub de boot (--part ld: linker script; --entry NOME)
-scripts/build.sh examples/x86_64_start.prova x86_64     # pipeline completo; exige LLVM/MLIR e ld.lld
+scripts/build.sh examples/x86_64_start.prova x86_64     # pipeline completo; exige mlir-opt, mlir-translate, opt, llc, ld.lld e clang no PATH
 ```
 **`fix`**: `SEU_COMANDO` lê um JSON no stdin (`source`, `errors` com rótulo/objetivo/contraexemplo, `locked`, `feedback`) e
 imprime o fonte `.prova` completo. O laço só aceita candidatos que preservam assinatura, `pre`, `post`, `effects`,
@@ -86,8 +86,10 @@ entradas aleatórias. Um achado real do verificador: sem `(pre (<= n 1000000))`,
 python tests/run_tests.py        # sem dependências; sai com código != 0 se algo falhar
 python tests/run_tests.py -k emit
 ```
-`pytest tests/` também funciona. O CI (`.github/workflows/ci.yml`) roda em Linux e Windows.
-Testado localmente em Python 3.12 (97 testes).
+`pytest tests/` também funciona. O CI (`.github/workflows/ci.yml`) roda em Linux e Windows; no Linux
+ele instala LLVM/MLIR para rodar de verdade a validação da emissão (`test_mlir_toolchain.py` — sem
+as ferramentas no ambiente o teste pula, como os demais que dependem do sistema).
+Testado localmente em Python 3.12 (105 testes, 1 skip: o boot que precisa de Linux).
 
 ## Estrutura
 ```
